@@ -7,7 +7,7 @@ const usage = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2
 const model = { provider: "openai", id: "gpt-5", name: "gpt-5", baseUrl: "https://api.openai.com/v1", api: "openai-responses", input: ["text"], reasoning: true, thinkingLevelMap: { high: "high" }, contextWindow: 128000, maxTokens: 8192, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
 const auth = { ok: true, apiKey: "synthetic-key", headers: { "x-test": "yes" } };
 const tool = { name: "probe", description: "Probe the current branch", parameters: { type: "object", properties: {} } };
-function fakePi() { const handlers = new Map(); return { on: (name, handler) => handlers.set(name, handler), registerCommand() {}, getActiveTools: () => ["probe"], getAllTools: () => [tool], handlers }; }
+function fakePi() { const handlers = new Map(); const renderers = new Map(); const appended = []; return { on: (name, handler) => handlers.set(name, handler), registerCommand() {}, registerEntryRenderer: (type, renderer) => renderers.set(type, renderer), appendEntry: (type, data) => appended.push({ type, data }), getActiveTools: () => ["probe"], getAllTools: () => [tool], handlers, renderers, appended }; }
 function assistantToolCall() { return { role: "assistant", content: [{ type: "toolCall", id: "call-1", name: "probe", arguments: {} }], api: model.api, provider: model.provider, model: model.id, usage, stopReason: "toolUse", timestamp: 6 }; }
 function preparation(firstKeptEntryId) { return { firstKeptEntryId, messagesToSummarize: [], turnPrefixMessages: [], isSplitTurn: false, tokensBefore: 12, fileOps: { read: new Set(), edited: new Set() }, settings: { enabled: true, reserveTokens: 16384, keepRecentTokens: 20000 } }; }
 
@@ -71,6 +71,23 @@ test("native serialization probe carries reasoning and session identity without 
   assert.match(JSON.stringify(body.tools), /probe/);
   assert.equal(networkCalled, false);
   assert.equal(serializationOptions({ thinkingLevel: "off", sessionManager: { getSessionId: () => "session-1" } }, auth).reasoning, undefined);
+});
+
+test("timeline entries append once after recognized extension compaction only", async () => {
+  const { pi } = await compactCurrentBranch([]);
+  const compact = pi.handlers.get("session_compact");
+  const entry = { id: "compact-1", type: "compaction", details: { schemaVersion: 1, state: "remote_applied", identity: { surface: "openai_api", protocol: "responses_compact_v1", endpoint: "https://secret.example/v1", model: "secret-model" }, checkpoint: { artifact: ["secret"], hash: "secret", length: 6 } } };
+  compact({ compactionEntry: entry, fromExtension: true });
+  compact({ compactionEntry: entry, fromExtension: true });
+  compact({ compactionEntry: { ...entry, id: "compact-2" }, fromExtension: false });
+  compact({ compactionEntry: { id: "compact-3", type: "compaction", details: { schemaVersion: 1, state: "local_fallback", failureClass: "timeout" } }, fromExtension: true });
+  assert.deepEqual(pi.appended, [
+    { type: "pi-openai-blackmagic-compact/compaction-timeline/1", data: { method: "remote_responses_v1" } },
+    { type: "pi-openai-blackmagic-compact/compaction-timeline/1", data: { method: "local_fallback", failureClass: "timeout" } },
+  ]);
+  const renderer = pi.renderers.get("pi-openai-blackmagic-compact/compaction-timeline/1");
+  assert.ok(renderer({ data: pi.appended[0].data }, {}, { bg: (_key, text) => text, fg: (_key, text) => text }));
+  assert.equal(renderer({ data: { method: "secret-model" } }, {}, { bg: (_key, text) => text, fg: (_key, text) => text }), undefined);
 });
 
 test("direct compaction is independent of auxiliary provider requests and falls back on unsupported models", async () => {

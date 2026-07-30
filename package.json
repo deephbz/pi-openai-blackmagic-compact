@@ -1,6 +1,6 @@
 {
   "name": "@hypercarrier/pi-openai-blackmagic-compact",
-  "version": "0.1.0-rc.2",
+  "version": "0.1.0-rc.3",
   "description": "Focused Pi hook extension for OpenAI-family server compaction.",
   "repository": { "type": "git", "url": "git+https://github.com/deephbz/pi-openai-blackmagic-compact.git" },
   "homepage": "https://github.com/deephbz/pi-openai-blackmagic-compact#readme",
@@ -10,7 +10,7 @@
   "type": "module",
   "keywords": ["pi-package", "compaction", "openai"],
   "engines": { "node": ">=20" },
-  "peerDependencies": { "@earendil-works/pi-coding-agent": "0.83.0", "@earendil-works/pi-ai": "0.83.0" },
+  "peerDependencies": { "@earendil-works/pi-coding-agent": "0.83.0", "@earendil-works/pi-ai": "0.83.0", "@earendil-works/pi-tui": "0.83.0" },
   "scripts": {
     "test": "node --test test/*.test.mjs",
     "verify:package": "node scripts/verify-package.mjs",

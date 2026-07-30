@@ -10,6 +10,12 @@ export const PROTOCOLS = Object.freeze({
 export const TELEMETRY_EVENTS = Object.freeze([
   "remote_applied", "remote_replayed", "remote_invalidated", "unsupported_surface", "local_fallback",
 ]);
+export const COMPACTION_TIMELINE_ENTRY_TYPE = "pi-openai-blackmagic-compact/compaction-timeline/1";
+export const COMPACTION_TIMELINE_METHODS = Object.freeze({
+  CODEX: "remote_codex_v2",
+  RESPONSES: "remote_responses_v1",
+  LOCAL_FALLBACK: "local_fallback",
+});
 export const COMPACTION_METHOD_LABELS = Object.freeze({
   none: "no active compaction",
   native: "Pi-native local summary",
@@ -45,15 +51,22 @@ export function projectCompactionMethod(branch) {
   if (details.state === "local_fallback") return `local fallback (${SAFE_FAILURE_CLASSES.has(details.failureClass) ? details.failureClass : "unclassified"})`;
   return COMPACTION_METHOD_LABELS.unsupported;
 }
-export function footerCompactionStatus(method) {
-  if (method === COMPACTION_METHOD_LABELS.none) return undefined;
-  if (method === COMPACTION_METHOD_LABELS.native) return "Compaction: Pi local";
-  if (method === COMPACTION_METHOD_LABELS.codex) return "Compaction: Codex remote v2";
-  if (method === COMPACTION_METHOD_LABELS.responses) return "Compaction: OpenAI/Azure remote v1";
-  if (method === COMPACTION_METHOD_LABELS.replay) return "Compaction: remote replay";
-  if (method === COMPACTION_METHOD_LABELS.invalidated) return "Compaction: remote invalidated";
-  if (method === COMPACTION_METHOD_LABELS.unsupported) return "Compaction: unsupported surface";
-  return `Compaction: Pi ${method}`;
+export function compactionTimelineData(entry) {
+  const details = entry?.type === "compaction" && entry.details;
+  if (!details || typeof details !== "object" || details.schemaVersion !== SCHEMA_VERSION) return undefined;
+  if (details.state === "remote_applied" && details.identity?.surface === "chatgpt_codex" && details.identity?.protocol === PROTOCOLS.chatgpt_codex)
+    return { method: COMPACTION_TIMELINE_METHODS.CODEX };
+  if (details.state === "remote_applied" && ["openai_api", "azure_openai"].includes(details.identity?.surface) && [PROTOCOLS.openai_api, PROTOCOLS.azure_openai].includes(details.identity?.protocol))
+    return { method: COMPACTION_TIMELINE_METHODS.RESPONSES };
+  if (details.state === "local_fallback" && SAFE_FAILURE_CLASSES.has(details.failureClass))
+    return { method: COMPACTION_TIMELINE_METHODS.LOCAL_FALLBACK, failureClass: details.failureClass };
+  return undefined;
+}
+export function compactionTimelineLabel(data) {
+  if (data?.method === COMPACTION_TIMELINE_METHODS.CODEX) return "[server compaction] Codex v2 applied";
+  if (data?.method === COMPACTION_TIMELINE_METHODS.RESPONSES) return "[server compaction] OpenAI/Azure Responses v1 applied";
+  if (data?.method === COMPACTION_TIMELINE_METHODS.LOCAL_FALLBACK && SAFE_FAILURE_CLASSES.has(data.failureClass)) return `[server compaction] Pi local fallback (${data.failureClass})`;
+  return undefined;
 }
 export function describeRemoteRoute(identity) {
   if (identity?.surface === "chatgpt_codex" && identity?.protocol === PROTOCOLS.chatgpt_codex) return "ChatGPT Codex / codex_compaction_trigger_v2";

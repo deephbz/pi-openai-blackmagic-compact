@@ -100,7 +100,7 @@ test("telemetry never exports provider endpoint or Azure deployment", () => {
   assert.equal(json.includes("secret"), false);
 });
 
-function fakePi() { const handlers = new Map(); return { on: (name, fn) => handlers.set(name, fn), registerCommand() {}, handlers }; }
+function fakePi() { const handlers = new Map(); return { on: (name, fn) => handlers.set(name, fn), registerCommand() {}, registerEntryRenderer() {}, appendEntry() {}, handlers }; }
 function controllerContext(branch = []) {
   return {
     model: { provider: "openai", id: "gpt-5", baseUrl: "https://api.openai.com/v1", api: "openai-responses" },

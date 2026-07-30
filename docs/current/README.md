@@ -2,7 +2,7 @@
 
 As of: 2026-07-30
 
-Candidate: 0.1.0-rc.2
+Candidate: 0.1.0-rc.3
 
 Stage: hardening of the narrow direct-compaction contract.
 
@@ -18,11 +18,11 @@ At `session_before_compact`, Pi first creates its normal readable summary. The p
 
 The probe receives the current system prompt, thinking level, session ID, authorization, and stable serializer options. The package identifies the exact approved surface, applies a matching active checkpoint replay to the derived body when present, and calls the matching compact protocol. Failure to serialize, authenticate, match replay, compact, or serialize the post-compaction segment returns Pi's readable local fallback.
 
-Normal `before_provider_request` only replays an active persisted checkpoint or records its invalidation. It does not affect compaction readiness. Status derives from the active branch and current model route.
+Normal `before_provider_request` only replays an active persisted checkpoint or records its invalidation. It does not affect compaction readiness. `/server-compact status` sends a transient notice from the active branch and current model route. It does not set persistent footer state.
 
 ## Persistence and replay
 
-Replay requires an active-branch checkpoint, exact provider identity, a supported namespace, and exactly one matching contiguous hashed provider-input segment. The opaque provider artifact stays in typed `CompactionEntry.details`; the readable summary stays in Pi's normal compaction record. Forks before a checkpoint cannot replay it.
+Replay requires an active-branch checkpoint, exact provider identity, a supported namespace, and exactly one matching contiguous hashed provider-input segment. The opaque provider artifact stays in typed `CompactionEntry.details`; the readable summary stays in Pi's normal compaction record. After a recognized extension compaction, one namespaced custom timeline entry stores only an allowlisted method label. Pi custom entries do not enter LLM context. Forks before a checkpoint cannot replay it.
 
 ## Evidence
 
