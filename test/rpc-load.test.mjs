@@ -18,12 +18,12 @@ test("Pi 0.83 RPC loader resolves the extension from an unrelated working direct
       input,
       encoding: "utf8",
       timeout: 30_000,
-      env: process.env,
+      env: { ...process.env, PI_CODING_AGENT_DIR: join(cwd, "agent") },
     });
     assert.equal(result.error, undefined, result.error?.message);
     assert.equal(result.status, 0, result.stderr || result.stdout);
     assert.match(result.stdout, /"name":"server-compact"/);
-    assert.match(result.stdout, /"message":"Active branch: no active compaction\\nNext \/compact: direct provider compaction when authorization permits it/);
+    assert.match(result.stdout, /"message":"Active branch: no active compaction\\nNext \/compact: Pi local fallback — current surface is unsupported/);
     assert.match(result.stdout, /Guaranteed fallback: Pi native local summary\./);
     assert.match(result.stdout, /"id":"status"[^\n]*"success":true/);
     assert.doesNotMatch(result.stderr, /Failed to load extension|Cannot find module/);
