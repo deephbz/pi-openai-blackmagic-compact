@@ -8,7 +8,7 @@ export const PROTOCOLS = Object.freeze({
   chatgpt_codex: "codex_compaction_trigger_v2",
 });
 export const TELEMETRY_EVENTS = Object.freeze([
-  "remote_applied", "remote_replayed", "remote_invalidated", "unsupported_surface", "local_fallback", "prepared_state_unavailable", "auxiliary_call_ignored",
+  "remote_applied", "remote_replayed", "remote_invalidated", "unsupported_surface", "local_fallback",
 ]);
 export const COMPACTION_METHOD_LABELS = Object.freeze({
   none: "no active compaction",
@@ -21,9 +21,7 @@ export const COMPACTION_METHOD_LABELS = Object.freeze({
 });
 
 const SAFE_FAILURE_CLASSES = new Set([
-  "auth", "auth_unavailable", "callback_error", "calibration_mismatch", "calibration_unverified", "capture_stale", "capture_unverified", "duplicate_provider_callback",
-  "identity_or_auth", "missing_or_malformed_correlation", "model_or_protocol", "native_tail_unverified",
-  "post_compaction_segment_unavailable", "remote_error", "timeout", "tail_or_fence_mismatch", "tail_calibration_mismatch",
+  "auth", "auth_unavailable", "model_or_protocol", "post_compaction_segment_unavailable", "remote_error", "replay_segment_mismatch", "serialization_unavailable", "timeout",
 ]);
 const OFFICIAL_OPENAI = new Set(["api.openai.com"]);
 const CODEX_HOSTS = new Set(["chatgpt.com", "chatgpt.com:443"]);
@@ -46,13 +44,6 @@ export function projectCompactionMethod(branch) {
   if (details.state === "unsupported_surface") return COMPACTION_METHOD_LABELS.unsupported;
   if (details.state === "local_fallback") return `local fallback (${SAFE_FAILURE_CLASSES.has(details.failureClass) ? details.failureClass : "unclassified"})`;
   return COMPACTION_METHOD_LABELS.unsupported;
-}
-/** A redacted projection of ephemeral conditions required for the next remote compaction. */
-export function projectNextRemoteReadiness({ prepared, calibration, lastRewriterAsserted, identity } = {}) {
-  if (identity?.kind === "unsupported") return "unsupported";
-  if (!lastRewriterAsserted) return "capture_unverified";
-  if (calibration === "passed" && prepared && identity?.kind === "supported") return "ready";
-  return calibration === "mismatch" ? "calibration_mismatch" : "calibration_unverified";
 }
 export function footerCompactionStatus(method) {
   if (method === COMPACTION_METHOD_LABELS.none) return undefined;
@@ -112,6 +103,6 @@ export function safeUsage(usage) {
 }
 export function safeTelemetry(type, data = {}) {
   if (!TELEMETRY_EVENTS.includes(type)) throw new TypeError(`unknown telemetry event: ${type}`);
-  const { identity, usage, latencyMs, failureClass, retention, checkpoint } = data;
-  return { type, surface: identity?.surface, protocol: identity?.protocol, model: identity?.model, usage: safeUsage(usage), latencyMs, failureClass, retention, artifactHash: checkpoint?.hash, artifactLength: checkpoint?.length };
+  const { identity, usage, latencyMs, failureClass, retention } = data;
+  return { type, surface: identity?.surface, protocol: identity?.protocol, model: identity?.model, usage: safeUsage(usage), latencyMs, failureClass, retention };
 }

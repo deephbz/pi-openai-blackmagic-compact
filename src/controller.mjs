@@ -1,9 +1,16 @@
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
-import { compact as nativeCompact } from "@earendil-works/pi-coding-agent";
+import { buildSessionContext, compact as nativeCompact, convertToLlm } from "@earendil-works/pi-coding-agent";
+import { azureOpenAIResponsesApi, openAICodexResponsesApi, openAIResponsesApi } from "@earendil-works/pi-ai/compat";
 import { compactCodex, compactResponses } from "./adapters.mjs";
-import { describeRemoteRoute, footerCompactionStatus, identifySurface, identityMatches, latestActiveCompaction, projectCompactionMethod, projectNextRemoteReadiness, replaceOneHashSegment, safeTelemetry, sha256 } from "./contract.mjs";
-import { appendTailPrediction, calibrationMatches, createProviderRequestCorrelation, evaluateCaptureOrder, installTransparentWrappers, payloadHash, serializePostCompactionSegment, serializeTail } from "./wrappers.mjs";
+import { describeRemoteRoute, footerCompactionStatus, identifySurface, identityMatches, latestActiveCompaction, projectCompactionMethod, replaceOneHashSegment, safeTelemetry, sha256 } from "./contract.mjs";
+
+const DELEGATES = Object.freeze({
+  "openai-responses": openAIResponsesApi().streamSimple,
+  "openai-codex-responses": openAICodexResponsesApi().streamSimple,
+  "azure-openai-responses": azureOpenAIResponsesApi().streamSimple,
+});
+const REPLAY_NAMESPACE = "pi-openai-blackmagic-compact/1";
+const LEGACY_REPLAY_NAMESPACE = "hc-openai-server-compaction/3";
+class SerializationProbeComplete extends Error {}
 
 function extractPrepared(payload) {
   if (!payload || typeof payload !== "object" || !Array.isArray(payload.input)) return undefined;
@@ -14,19 +21,19 @@ function azureDeployment(model, auth) {
   for (const entry of String(mapping ?? "").split(",")) { const [id, deployment] = entry.split("=", 2).map((value) => value?.trim()); if (id === model?.id && deployment) return deployment; }
   return model?.id;
 }
-function modelIdentity(ctx, prepared, auth) {
-  const model = ctx?.model;
-  const env = auth?.env ?? {}; const baseUrl = model?.api === "azure-openai-responses" ? (env.AZURE_OPENAI_BASE_URL ?? (env.AZURE_OPENAI_RESOURCE_NAME ? `https://${env.AZURE_OPENAI_RESOURCE_NAME}.openai.azure.com/openai/v1` : model?.baseUrl)) : (env.OPENAI_BASE_URL ?? model?.baseUrl);
-  return identifySurface({ provider: model?.provider, baseUrl, api: model?.api, model: model?.id ?? prepared?.model, deployment: model?.api === "azure-openai-responses" ? azureDeployment(model, auth) : undefined });
+function modelIdentity(ctx, auth) {
+  const model = ctx?.model; const env = auth?.env ?? {};
+  const baseUrl = model?.api === "azure-openai-responses" ? (env.AZURE_OPENAI_BASE_URL ?? (env.AZURE_OPENAI_RESOURCE_NAME ? `https://${env.AZURE_OPENAI_RESOURCE_NAME}.openai.azure.com/openai/v1` : model?.baseUrl)) : (env.OPENAI_BASE_URL ?? model?.baseUrl);
+  return identifySurface({ provider: model?.provider, baseUrl, api: model?.api, model: model?.id, deployment: model?.api === "azure-openai-responses" ? azureDeployment(model, auth) : undefined });
 }
-function calibrationFence(model, context, coordinates = {}) {
-  return sha256({ provider: model?.provider, model: model?.id, api: model?.api, baseUrl: model?.baseUrl, systemPrompt: context?.systemPrompt, tools: context?.tools, compat: model?.compat, ...coordinates });
+function activeCheckpoint(branch) {
+  const entry = latestActiveCompaction(branch);
+  const details = entry?.details; const replay = details?.replay; const checkpoint = details?.checkpoint;
+  if (details?.schemaVersion !== 1 || details.state !== "remote_applied" || ![REPLAY_NAMESPACE, LEGACY_REPLAY_NAMESPACE].includes(replay?.namespace) || !Array.isArray(replay.replacedItemHashes) || !replay.replacedItemHashes.length || replay.replacedItemHashes.some((hash) => !/^[0-9a-f]{64}$/.test(hash)) || !Array.isArray(checkpoint?.artifact) || !checkpoint.artifact.length) return undefined;
+  const serialized = JSON.stringify(checkpoint.artifact);
+  if (checkpoint.hash !== sha256(serialized) || checkpoint.length !== serialized.length) return undefined;
+  return { entry, details };
 }
-function lastCheckpoint(branch) {
-  for (const entry of [...(branch ?? [])].reverse()) if (entry?.type === "compaction" && entry?.details?.schemaVersion === 1) return { entry, details: entry.details };
-}
-const REPLAY_NAMESPACE = "pi-openai-blackmagic-compact/1";
-const LEGACY_REPLAY_NAMESPACE = "hc-openai-server-compaction/3";
 function rewriteReplay(payload, checkpoint, identity) {
   const replay = checkpoint?.details?.replay;
   if (!payload || !identityMatches(checkpoint.details, identity) || ![REPLAY_NAMESPACE, LEGACY_REPLAY_NAMESPACE].includes(replay?.namespace)) return undefined;
@@ -39,121 +46,95 @@ async function nativeSummary(event, ctx) {
   if (!auth?.ok) return undefined;
   return nativeCompact(event.preparation, ctx.model, auth.apiKey, auth.headers, event.customInstructions, event.signal, ctx.thinkingLevel, undefined, auth.env);
 }
+function activeTools(pi) {
+  if (typeof pi?.getActiveTools !== "function" || typeof pi?.getAllTools !== "function") throw new Error("Pi tool access is unavailable");
+  const names = new Set(pi.getActiveTools());
+  return pi.getAllTools().filter((tool) => names.has(tool.name)).map(({ name, description, parameters }) => ({ name, description, parameters }));
+}
+export async function captureNativeBody(model, context, options) {
+  const delegate = DELEGATES[model?.api];
+  if (!delegate) throw new Error("unsupported Responses serializer API");
+  let settled = false; let resolveCapture; let rejectCapture;
+  const capture = new Promise((resolve, reject) => { resolveCapture = resolve; rejectCapture = reject; });
+  let stream;
+  try {
+    stream = delegate(model, context, { ...options, onPayload(payload) { if (!Array.isArray(payload?.input)) throw new Error("native Responses serializer produced no input array"); settled = true; resolveCapture(structuredClone(payload)); throw new SerializationProbeComplete("serialization probe complete"); } });
+  } catch (error) { rejectCapture(error); return capture; }
+  void stream.result().then((message) => { if (!settled) rejectCapture(new Error(message?.errorMessage ?? "native Responses serializer failed")); }, rejectCapture);
+  return capture;
+}
+export function serializationOptions(ctx, auth, signal) {
+  return { apiKey: auth.apiKey, headers: auth.headers, env: auth.env, cacheRetention: "none", transport: "sse", reasoning: ctx.thinkingLevel === "off" ? undefined : ctx.thinkingLevel, sessionId: ctx.sessionManager?.getSessionId?.(), signal };
+}
+async function serializeBranch(pi, event, ctx, auth) {
+  if (typeof ctx?.getSystemPrompt !== "function") throw new Error("Pi system prompt access is unavailable");
+  const messages = convertToLlm(buildSessionContext(event.branchEntries ?? ctx.sessionManager?.getBranch?.() ?? []).messages);
+  return captureNativeBody(ctx.model, { systemPrompt: ctx.getSystemPrompt(), messages, tools: activeTools(pi) }, serializationOptions(ctx, auth, event.signal));
+}
+async function serializePostCompaction(pi, event, ctx, auth, syntheticCompaction) {
+  if (typeof ctx?.getSystemPrompt !== "function") throw new Error("Pi system prompt access is unavailable");
+  const branch = event.branchEntries ?? ctx.sessionManager?.getBranch?.() ?? [];
+  const messages = convertToLlm(buildSessionContext([...branch, syntheticCompaction]).messages);
+  return (await captureNativeBody(ctx.model, { systemPrompt: ctx.getSystemPrompt(), messages, tools: activeTools(pi) }, serializationOptions(ctx, auth, event.signal))).input;
+}
 export function readableSummary() { throw new Error("readableSummary is model-generated by Pi native compact(); call the session lifecycle handler"); }
 
 export function createServerCompactionController(pi, options = {}) {
   if (!pi?.on || !pi?.registerCommand) throw new TypeError("A complete Pi ExtensionAPI is required");
   const fetchImpl = options.fetchImpl ?? globalThis.fetch;
   const summaryFactory = options.summaryFactory;
-  const requestCorrelation = options.requestCorrelation ?? createProviderRequestCorrelation();
   const telemetry = typeof options.telemetry === "function" ? options.telemetry : () => {};
-  let lastRewriterAsserted = options.lastRewriterAsserted === true;
-  let prepared; let preparedIdentity; let hookCapture; let responseCapture; let requestId = 0; let tail = []; let tailHashes = new Set(); let tailFailed = false;
-  let calibration = "unverified"; let wrappers = [];
   const emit = (type, data = {}) => { try { telemetry(safeTelemetry(type, data)); } catch {} };
-  const loadConfig = async (ctx) => { if (options.lastRewriterAsserted !== undefined || ctx?.isProjectTrusted?.() !== true) return; try { lastRewriterAsserted = JSON.parse(await readFile(join(ctx.cwd, ".pi", "pi-openai-blackmagic-compact.json"), "utf8"))?.lastRewriterAsserted === true; } catch { lastRewriterAsserted = false; } };
   const methodFor = (ctx) => projectCompactionMethod(ctx?.sessionManager?.getBranch?.());
-  const readinessFor = () => projectNextRemoteReadiness({ prepared: Boolean(prepared), calibration, lastRewriterAsserted, identity: preparedIdentity });
-  const routeFor = (ctx) => describeRemoteRoute(preparedIdentity) ?? describeRemoteRoute(latestActiveCompaction(ctx?.sessionManager?.getBranch?.())?.details?.identity);
-  const readinessMessage = (readiness) => readiness === "ready" ? "remote compaction ready" : readiness === "unsupported" ? "Pi local fallback — current request surface is unsupported (unsupported)" : readiness === "capture_unverified" ? "Pi local fallback — load-last request capture is not asserted (capture_unverified)" : readiness === "calibration_mismatch" ? "Pi local fallback — calibration mismatch disabled remote compaction (calibration_mismatch)" : "Pi local fallback — calibration has not passed yet (calibration_unverified)";
-  const updateMethodStatus = (ctx) => {
-    const method = methodFor(ctx);
-    if (typeof ctx?.ui?.setStatus === "function") ctx.ui.setStatus("pi-openai-blackmagic-compact", footerCompactionStatus(method));
-    return method;
-  };
+  const routeFor = (ctx) => describeRemoteRoute(modelIdentity(ctx));
+  const updateMethodStatus = (ctx) => { const method = methodFor(ctx); if (typeof ctx?.ui?.setStatus === "function") ctx.ui.setStatus("pi-openai-blackmagic-compact", footerCompactionStatus(method)); return method; };
   const localFallback = (local, failureClass) => ({ compaction: { ...local, details: { ...(local.details ?? {}), schemaVersion: 1, state: "local_fallback", failureClass } } });
-  const clearCaptureState = () => { prepared = undefined; preparedIdentity = undefined; hookCapture = undefined; responseCapture = undefined; requestId = 0; tail = []; tailHashes = new Set(); tailFailed = false; calibration = "unverified"; };
-  const captureIsCurrent = (ctx) => {
-    const branch = ctx?.sessionManager?.getBranch?.() ?? [];
-    const sessionId = ctx?.sessionManager?.getSessionId?.();
-    return typeof sessionId === "string" && sessionId.length > 0 && responseCapture?.sessionId === sessionId && typeof responseCapture.requestLeafId === "string" && responseCapture.requestLeafId.length > 0 && branch.some((entry) => entry?.id === responseCapture.requestLeafId);
-  };
 
-  wrappers = (options.installWrappers ?? installTransparentWrappers)(pi, observeFinal, observeNativeMessage, requestCorrelation);
-  pi.on("session_start", async (_event, ctx) => { await loadConfig(ctx); clearCaptureState(); updateMethodStatus(ctx); });
-  pi.on("session_tree", (_event, ctx) => { clearCaptureState(); updateMethodStatus(ctx); });
-  pi.on("session_compact", (_event, ctx) => { clearCaptureState(); updateMethodStatus(ctx); });
+  pi.on("session_start", (_event, ctx) => { updateMethodStatus(ctx); });
+  pi.on("session_tree", (_event, ctx) => { updateMethodStatus(ctx); });
+  pi.on("session_compact", (_event, ctx) => { updateMethodStatus(ctx); });
   pi.on("before_provider_request", async (event, ctx) => {
     const auth = ctx?.model && typeof ctx?.modelRegistry?.getApiKeyAndHeaders === "function" ? await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model) : undefined;
-    const identity = modelIdentity(ctx, extractPrepared(event.payload), auth);
-    if (identity.kind !== "supported") emit("unsupported_surface", { identity });
-    if (hookCapture && !hookCapture.consumed) { calibration = "mismatch"; prepared = undefined; emit("prepared_state_unavailable", { identity: hookCapture.identity, failureClass: "outstanding_correlation_overwritten" }); return undefined; }
-    const checkpoint = lastCheckpoint(ctx?.sessionManager?.getBranch?.());
+    const identity = modelIdentity(ctx, auth);
+    if (identity.kind !== "supported") { emit("unsupported_surface", { identity }); return undefined; }
+    const checkpoint = activeCheckpoint(ctx?.sessionManager?.getBranch?.());
     const replayed = checkpoint && rewriteReplay(event.payload, checkpoint, identity);
     if (replayed) emit("remote_replayed", { identity, checkpoint: checkpoint.details.checkpoint, retention: checkpoint.details.checkpoint.retention });
     else if (checkpoint?.details?.schemaVersion === 1) emit("remote_invalidated", { identity, failureClass: identityMatches(checkpoint.details, identity) ? "replay_segment_mismatch" : "identity_mismatch" });
-    hookCapture = { id: ++requestId, invocation: requestCorrelation.current(), consumed: false, inputHash: payloadHash(event.payload?.input), outputHash: payloadHash(replayed ?? event.payload), identity, coordinates: { sessionId: ctx.sessionManager?.getSessionId?.(), leafId: ctx.sessionManager?.getLeafId?.(), branch: (ctx.sessionManager?.getBranch?.() ?? []).map((entry) => entry.id) } };
     return replayed;
   });
-  pi.on("message_end", (event) => {
-    if (!responseCapture) return;
-    const message = event.message;
-    if (!["user", "assistant", "toolResult"].includes(message?.role)) { tailFailed = true; return; }
-    if (message?.role === "assistant" && responseCapture.nativeMessage !== message) { tailFailed = true; return; }
-    if (tailHashes.has(message)) { tailFailed = true; return; }
-    tailHashes.add(message); tail.push(message);
-  });
-
-  function observeNativeMessage({ model, context, message, invocation }) {
-    if (!responseCapture || responseCapture.invocation !== invocation) return;
-    if (responseCapture.model !== model || responseCapture.context !== context || responseCapture.nativeMessage) { tailFailed = true; return; }
-    responseCapture.nativeMessage = message;
-  }
-
-  async function observeFinal({ model, context, base, finalBody, callbackError, invocation }) {
-    if (!hookCapture || hookCapture.invocation !== invocation) { emit("auxiliary_call_ignored"); return; }
-    if (hookCapture.consumed) { calibration = "mismatch"; prepared = undefined; emit("prepared_state_unavailable", { identity: hookCapture.identity, failureClass: "duplicate_provider_callback" }); return; }
-    if (callbackError || !finalBody || typeof finalBody !== "object" || !Array.isArray(finalBody.input)) { calibration = "mismatch"; prepared = undefined; emit("prepared_state_unavailable", { identity: hookCapture.identity, failureClass: callbackError ? "callback_error" : "missing_or_malformed_correlation" }); return; }
-    const proof = evaluateCaptureOrder({ base, extensionInputHash: hookCapture.inputHash, extensionOutputHash: hookCapture.outputHash, finalBody });
-    if (!proof.verified) { calibration = "mismatch"; prepared = undefined; emit("prepared_state_unavailable", { identity: hookCapture.identity, failureClass: proof.earlierRewrite ? "earlier_rewrite" : "later_rewrite" }); return; }
-    hookCapture.consumed = true;
-    const fence = calibrationFence(model, context, { identity: hookCapture.identity });
-    if (responseCapture) {
-      let serializedTail;
-      try {
-        if (tailFailed || responseCapture.fence !== fence || hookCapture.coordinates.sessionId !== responseCapture.sessionId || !hookCapture.coordinates.branch.includes(responseCapture.requestLeafId)) throw new Error("calibration fence");
-        serializedTail = await serializeTail(responseCapture.model, responseCapture.context, tail, responseCapture.baseInput);
-      } catch { calibration = "mismatch"; prepared = undefined; emit("prepared_state_unavailable", { failureClass: "tail_or_fence_mismatch" }); return; }
-      calibration = calibrationMatches(responseCapture.finalBody, serializedTail, finalBody) ? "passed" : "mismatch";
-      if (calibration !== "passed") emit("prepared_state_unavailable", { identity: hookCapture.identity, failureClass: "tail_calibration_mismatch" });
-    }
-    responseCapture = { model, context, finalBody, baseInput: structuredClone(base.input), fence, invocation, nativeMessage: undefined, sessionId: hookCapture.coordinates.sessionId, requestLeafId: hookCapture.coordinates.leafId };  tail = []; tailHashes = new Set(); tailFailed = false;
-    prepared = extractPrepared(finalBody); preparedIdentity = hookCapture.identity;
-  }
-
   pi.on("session_before_compact", async (event, ctx) => {
     const local = summaryFactory ? { summary: await summaryFactory(event.preparation, event, ctx), firstKeptEntryId: event.preparation.firstKeptEntryId, tokensBefore: event.preparation.tokensBefore } : await nativeSummary(event, ctx);
     if (!local?.summary?.trim()) return undefined;
-    if (!prepared || calibration !== "passed" || !lastRewriterAsserted || preparedIdentity?.kind !== "supported") { emit(prepared ? "local_fallback" : "prepared_state_unavailable", { identity: preparedIdentity, failureClass: calibration === "passed" ? "capture_unverified" : `calibration_${calibration}` }); return localFallback(local, calibration === "passed" ? "capture_unverified" : `calibration_${calibration}`); }
-    if (!captureIsCurrent(ctx)) { emit("local_fallback", { identity: preparedIdentity, failureClass: "capture_stale" }); clearCaptureState(); return localFallback(local, "capture_stale"); }
-    if (!responseCapture?.nativeMessage || tailFailed || tail.length !== 1 || tail[0] !== responseCapture.nativeMessage || tail[0]?.role !== "assistant") { emit("local_fallback", { identity: preparedIdentity, failureClass: "native_tail_unverified" }); return localFallback(local, "native_tail_unverified"); }
-    const serializedTail = await serializeTail(responseCapture.model, responseCapture.context, tail, responseCapture.baseInput);
-    const compactPrepared = extractPrepared(appendTailPrediction(prepared.payload, serializedTail));
-    if (!ctx?.model || typeof ctx?.modelRegistry?.getApiKeyAndHeaders !== "function") { emit("local_fallback", { identity: preparedIdentity, failureClass: "auth_unavailable" }); return localFallback(local, "auth_unavailable"); }
+    if (!ctx?.model || typeof ctx?.modelRegistry?.getApiKeyAndHeaders !== "function") return localFallback(local, "auth_unavailable");
     const auth = await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model);
-    const identity = modelIdentity(ctx, compactPrepared, auth);
-    if (!auth?.ok || !auth.apiKey) { emit("local_fallback", { identity, failureClass: "auth_unavailable" }); return localFallback(local, "auth_unavailable"); }
-    if (!identityMatches({ schemaVersion: 1, identity: preparedIdentity }, identity)) { emit("local_fallback", { identity, failureClass: "identity_or_auth" }); return localFallback(local, "identity_or_auth"); }
-    const result = identity.surface === "chatgpt_codex" ? await compactCodex({ identity, prepared: compactPrepared, auth, fetchImpl, signal: event.signal }) : await compactResponses({ identity, prepared: compactPrepared, auth, fetchImpl, signal: event.signal });
+    const identity = modelIdentity(ctx, auth);
+    if (!auth?.ok || !auth.apiKey) return localFallback(local, "auth_unavailable");
+    if (identity.kind !== "supported") { emit("local_fallback", { identity, failureClass: "model_or_protocol" }); return localFallback(local, "model_or_protocol"); }
+    let compactBody;
+    try { compactBody = extractPrepared(await serializeBranch(pi, event, ctx, auth)); } catch { emit("local_fallback", { identity, failureClass: "serialization_unavailable" }); return localFallback(local, "serialization_unavailable"); }
+    if (!compactBody) return localFallback(local, "serialization_unavailable");
+    const checkpoint = activeCheckpoint(event.branchEntries ?? ctx.sessionManager?.getBranch?.());
+    if (checkpoint) {
+      const replayed = rewriteReplay(compactBody.payload, checkpoint, identity);
+      if (!replayed) { emit("local_fallback", { identity, failureClass: "replay_segment_mismatch" }); return localFallback(local, "replay_segment_mismatch"); }
+      compactBody = extractPrepared(replayed);
+    }
+    const result = identity.surface === "chatgpt_codex" ? await compactCodex({ identity, prepared: compactBody, auth, fetchImpl, signal: event.signal }) : await compactResponses({ identity, prepared: compactBody, auth, fetchImpl, signal: event.signal });
     if (!result.details) { emit("local_fallback", { identity, failureClass: result.failureClass }); return localFallback(local, result.failureClass); }
     const syntheticCompaction = { type: "compaction", id: "pi-openai-blackmagic-compact-pending", parentId: ctx.sessionManager?.getLeafId?.() ?? "", timestamp: Date.now(), summary: local.summary, firstKeptEntryId: local.firstKeptEntryId, tokensBefore: local.tokensBefore };
     let postSegment;
-    try { postSegment = await serializePostCompactionSegment(responseCapture.model, responseCapture.context, event.branchEntries ?? ctx.sessionManager?.getBranch?.() ?? [], syntheticCompaction); }
-    catch { emit("local_fallback", { identity, failureClass: "post_compaction_segment_unavailable" }); return localFallback(local, "post_compaction_segment_unavailable"); }
+    try { postSegment = await serializePostCompaction(pi, event, ctx, auth, syntheticCompaction); } catch { emit("local_fallback", { identity, failureClass: "post_compaction_segment_unavailable" }); return localFallback(local, "post_compaction_segment_unavailable"); }
     result.details.lineage = { firstKeptEntryId: event.preparation.firstKeptEntryId, leafId: ctx.sessionManager?.getLeafId?.() };
     result.details.replay = { namespace: REPLAY_NAMESPACE, replacedItemHashes: postSegment.map((item) => sha256(item)) };
     emit("remote_applied", { identity, ...result.details, checkpoint: result.details.checkpoint });
     return { compaction: { ...local, details: { ...result.details, local: local.details } } };
   });
-  pi.registerCommand("server-compact", { description: "Show focused server-compaction status or help; it never changes thresholds.", getArgumentCompletions(prefix) { const items = ["status", "help"].filter((x) => x.startsWith(prefix.trim())).map((value) => ({ value, label: value, description: value === "status" ? "Safe current capability status" : "Command usage" })); return items.length ? items : null; }, handler: async (args, ctx) => { const action = args.trim() || "status"; const method = updateMethodStatus(ctx); const readiness = readinessFor(); const route = routeFor(ctx); const text = action === "help" ? "Usage: /server-compact [status|help]. It has no agent tool and never owns thresholds." : action === "status" ? [
+  pi.registerCommand("server-compact", { description: "Show focused server-compaction status or help; it never changes thresholds.", getArgumentCompletions(prefix) { const items = ["status", "help"].filter((x) => x.startsWith(prefix.trim())).map((value) => ({ value, label: value, description: value === "status" ? "Safe current capability status" : "Command usage" })); return items.length ? items : null; }, handler: async (args, ctx) => { const action = args.trim() || "status"; const method = updateMethodStatus(ctx); const route = routeFor(ctx); const text = action === "help" ? "Usage: /server-compact [status|help]. It has no agent tool and never owns thresholds." : action === "status" ? [
     `Active branch: ${method}`,
-    `Next /compact: ${readinessMessage(readiness)}`,
+    `Next /compact: ${route ? "direct provider compaction when authorization permits it" : "Pi local fallback — current surface is unsupported"}`,
     ...(route ? [`Route/protocol: ${route}`] : []),
-    `Calibration: ${calibration === "passed" ? "passed" : calibration === "mismatch" ? "mismatch" : "not yet verified"}`,
-    `Load-last assertion: ${lastRewriterAsserted ? "asserted" : "not asserted"}`,
-    `Wrappers: ${wrappers.length} installed`,
     "Guaranteed fallback: Pi native local summary.",
     "Privacy: no prompts, tools, credentials, endpoints, deployments, opaque artifacts, hashes, or item counts.",
   ].join("\n") : "Usage: /server-compact [status|help]"; if (ctx?.hasUI && typeof ctx.ui?.notify === "function") ctx.ui.notify(text, action === "status" || action === "help" ? "info" : "warning"); } });
-  return { snapshot: () => ({ prepared: Boolean(prepared), identity: preparedIdentity, calibration, readiness: readinessFor(), wrappers: [...wrappers] }) };
 }

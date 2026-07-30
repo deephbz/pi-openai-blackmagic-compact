@@ -5,6 +5,10 @@ import { compactCodex, compactResponses } from "../src/adapters.mjs";
 import { checkpointDetails, safeTelemetry, sha256 } from "../src/contract.mjs";
 import { createServerCompactionController } from "../src/controller.mjs";
 
+function codexToken() {
+  const payload = Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "acct-test" } })).toString("base64url");
+  return `e30.${payload}.test`;
+}
 const identities = {
   openai: { surface: "openai_api", protocol: "responses_compact_v1", endpoint: "http://127.0.0.1:1/v1", model: "gpt-5" },
   azure: { surface: "azure_openai", protocol: "responses_compact_v1", endpoint: "http://127.0.0.1:1/openai/v1", model: "gpt-5", deployment: "private-deployment" },
@@ -45,7 +49,7 @@ for (const [surface, identity] of Object.entries(identities)) test(`${surface} l
     if (body === undefined) {
       const remote = { ...identity, endpoint: request.url + (identity.surface === "chatgpt_codex" ? "/backend-api" : identity.surface === "azure_openai" ? "/openai/v1" : "/v1") };
       const run = remote.surface === "chatgpt_codex" ? compactCodex : compactResponses;
-      const result = await run({ identity: remote, prepared, auth: { apiKey: identity.surface === "chatgpt_codex" ? "eyJhbGciOiJub25lIn0.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjdC10ZXN0In19.signature" : "synthetic-key", headers: { "x-provider-proof": "present" } }, fetchImpl: fetch });
+      const result = await run({ identity: remote, prepared, auth: { apiKey: identity.surface === "chatgpt_codex" ? codexToken() : "synthetic-key", headers: { "x-provider-proof": "present" } }, fetchImpl: fetch });
       assert.ok(result.details, result.error?.message);
       return { body: {} };
     }
@@ -67,7 +71,7 @@ for (const [surface, identity] of Object.entries(identities)) test(`${surface} l
 });
 
 test("Codex persists a bounded real-user window plus its one validated compaction item", async () => {
-  const result = await compactCodex({ identity: identities.codex, prepared: { ...prepared, input: [{ role: "user", content: "keep" }, { role: "assistant", content: "discard" }, { role: "user", name: "hc-control", content: "discard" }] }, auth: { apiKey: "eyJhbGciOiJub25lIn0.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjdC10ZXN0In19.signature" }, fetchImpl: async () => ({ ok: true, json: async () => ({ output: [{ type: "compaction", encrypted_content: "opaque" }] }) }) });
+  const result = await compactCodex({ identity: identities.codex, prepared: { ...prepared, input: [{ role: "user", content: "keep" }, { role: "assistant", content: "discard" }, { role: "user", name: "hc-control", content: "discard" }] }, auth: { apiKey: codexToken() }, fetchImpl: async () => ({ ok: true, json: async () => ({ output: [{ type: "compaction", encrypted_content: "opaque" }] }) }) });
   assert.deepEqual(result.details.checkpoint.artifact, [{ role: "user", content: "keep" }, { type: "compaction", encrypted_content: "opaque" }]);
   assert.equal(result.details.checkpoint.retention, "recent_real_user_messages_64000_plus_canonical_provider_window");
 });
@@ -110,7 +114,7 @@ function controllerContext(branch = []) {
 
 test("public request hook replays only its named checkpoint into provider payload, not AgentMessage context", async () => {
   const pi = fakePi();
-  createServerCompactionController(pi, { lastRewriterAsserted: true, summaryFactory: () => "local summary" });
+  createServerCompactionController(pi, { summaryFactory: () => "local summary" });
   const details = checkpointDetails({ identity: { surface: "openai_api", protocol: "responses_compact_v1", endpoint: "https://api.openai.com/v1", model: "gpt-5", api: "openai-responses" }, opaqueWindow: [{ type: "compaction", encrypted_content: "opaque" }] });
   details.lineage = { firstKeptEntryId: "keep", branchLeafId: "leaf" };
   const original = { model: "gpt-5", input: [{ role: "user", content: [{ type: "input_text", text: "The conversation history before this point was compacted into the following summary:\n\n<summary>\nlocal summary\n</summary>" }] }, { role: "user", content: "new work" }] };
@@ -121,4 +125,26 @@ test("public request hook replays only its named checkpoint into provider payloa
   assert.equal(JSON.stringify(replayed.input).includes("local summary"), false);
   assert.equal(JSON.stringify(replayed.input).includes("new work"), true);
   assert.deepEqual(original.input[0].role, "user", "request hook returns a replacement rather than mutating caller payload");
+});
+
+test("only the latest active replay-capable checkpoint can replay", async () => {
+  const pi = fakePi(); createServerCompactionController(pi, { summaryFactory: () => "local summary" });
+  const identity = { surface: "openai_api", protocol: "responses_compact_v1", endpoint: "https://api.openai.com/v1", model: "gpt-5", api: "openai-responses" };
+  const original = { model: "gpt-5", input: [{ role: "user", content: "old" }] };
+  const remote = { type: "compaction", details: checkpointDetails({ identity, opaqueWindow: [{ type: "compaction", encrypted_content: "opaque" }] }) };
+  remote.details.replay = { namespace: "pi-openai-blackmagic-compact/1", replacedItemHashes: [sha256(original.input[0])] };
+  const local = { type: "compaction", details: { schemaVersion: 1, state: "local_fallback", failureClass: "timeout" } };
+  assert.equal(await pi.handlers.get("before_provider_request")({ payload: original }, controllerContext([remote, local])), undefined);
+
+  const emptyReplayHash = structuredClone(remote);
+  emptyReplayHash.details.replay.replacedItemHashes = [""];
+  assert.equal(await pi.handlers.get("before_provider_request")({ payload: original }, controllerContext([emptyReplayHash])), undefined);
+  const corrupted = structuredClone(remote);
+  corrupted.details.checkpoint.hash = "invalid";
+  assert.equal(await pi.handlers.get("before_provider_request")({ payload: original }, controllerContext([corrupted])), undefined);
+  const empty = structuredClone(remote);
+  empty.details.checkpoint.artifact = [];
+  empty.details.checkpoint.length = 2;
+  empty.details.checkpoint.hash = sha256("[]");
+  assert.equal(await pi.handlers.get("before_provider_request")({ payload: original }, controllerContext([empty])), undefined);
 });

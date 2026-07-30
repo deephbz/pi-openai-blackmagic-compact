@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url)));
 const expected = {
   name: "@hypercarrier/pi-openai-blackmagic-compact",
-  version: "0.1.0-rc.1",
+  version: "0.1.0-rc.2",
   repository: "git+https://github.com/deephbz/pi-openai-blackmagic-compact.git",
   homepage: "https://github.com/deephbz/pi-openai-blackmagic-compact#readme",
   bugs: "https://github.com/deephbz/pi-openai-blackmagic-compact/issues",
@@ -20,8 +20,8 @@ if (pkg.dependencies?.["@earendil-works/pi-coding-agent"]) throw new Error("Pi r
 
 const packed = new Set(JSON.parse(execFileSync("npm", ["pack", "--dry-run", "--json"], { encoding: "utf8" }))[0].files.map((file) => file.path));
 const allowed = new Set([
-  "LICENSE", "README.md", "package.json", "config/pi-openai-blackmagic-compact.example.json", "docs/current/README.md", "scripts/verify-package.mjs",
-  "src/adapters.mjs", "src/contract.mjs", "src/controller.mjs", "src/extension.mjs", "src/index.mjs", "src/wrappers.mjs",
+  "LICENSE", "README.md", "package.json", "docs/current/README.md", "scripts/verify-package.mjs",
+  "src/adapters.mjs", "src/contract.mjs", "src/controller.mjs", "src/extension.mjs", "src/index.mjs",
 ]);
 for (const file of packed) if (!allowed.has(file)) throw new Error(`package contains unapproved file: ${file}`);
 for (const file of allowed) if (!packed.has(file)) throw new Error(`package omits required file: ${file}`);
