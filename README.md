@@ -4,8 +4,6 @@ Direct server compaction for the Pi branch you are using now.
 
 Blackmagic keeps Pi in charge of the readable summary and the Session change. When one of three approved OpenAI-family surfaces can compact the branch, it adds one provider checkpoint. When it cannot, Pi keeps working with its local summary. No ceremony. No provider wrapper. No extension configuration.
 
-**Proof, not promise:** rc.3 has 21 passing tests. Authenticated Codex checks covered apply, repeated apply, fresh-process replay, and recall. OpenAI and Azure live checks still need credentials, so they remain unverified live surfaces.
-
 For the full current contract, see [docs/current/README.md](docs/current/README.md).
 
 ## A normal day
@@ -80,4 +78,4 @@ npm run verify:package
 npm run pack:check
 ```
 
-The rc.3 suite checks provider contracts, direct current-branch serialization, replay and restart boundaries, timeline persistence, redaction, LLM-context exclusion, package contents, and RPC loading.
+All 21 rc.3 tests pass. The suite checks provider contracts, direct current-branch serialization, replay and restart boundaries, timeline persistence, redaction, LLM-context exclusion, package contents, and RPC loading.
