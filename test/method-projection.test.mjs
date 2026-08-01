@@ -21,12 +21,13 @@ test("timeline data has one allowlisted redacted field", () => {
   assert.equal(compactionTimelineLabel({ method: COMPACTION_TIMELINE_METHODS.LOCAL_FALLBACK, failureClass: "timeout" }), "[server compaction] Pi local fallback (timeout)");
   assert.equal(compactionTimelineLabel({ method: "https://secret.invalid" }), undefined);
 });
-test("status uses current model and persisted branch state without readiness state", async () => {
+test("status uses current model, persisted branch state, and executable continuation state", async () => {
   const handlers = new Map(); let command;
   const pi = { on: (name, handler) => handlers.set(name, handler), registerCommand: (_name, value) => { command = value; }, registerEntryRenderer() {}, appendEntry() {} };
   createServerCompactionController(pi);
   const notices = []; const ctx = { hasUI: true, model: { provider: "openai", id: "gpt-5", baseUrl: "https://api.openai.com/v1", api: "openai-responses" }, sessionManager: { getBranch: () => [remote()] }, ui: { notify: (...args) => notices.push(args) } };
   await command.handler("status", ctx);
-  assert.match(notices.at(-1)[0], /direct provider compaction/);
+  assert.match(notices.at(-1)[0], /Blackmagic remote compaction/);
+  assert.match(notices.at(-1)[0], /Continuation state: SUMMARY_STAYS_READABLE/);
   assert.doesNotMatch(notices.at(-1)[0], /Calibration|Wrappers|assertion|capture/i);
 });

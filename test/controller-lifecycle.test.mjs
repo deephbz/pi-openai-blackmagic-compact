@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { captureNativeBody, createServerCompactionController, serializationOptions } from "../src/controller.mjs";
+import { BLACKMAGIC_COMPACTION_MARKER } from "../src/state-machine.mjs";
 
 const usage = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
 const model = { provider: "openai", id: "gpt-5", name: "gpt-5", baseUrl: "https://api.openai.com/v1", api: "openai-responses", input: ["text"], reasoning: true, thinkingLevelMap: { high: "high" }, contextWindow: 128000, maxTokens: 8192, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
@@ -15,12 +16,12 @@ async function compactCurrentBranch(entries) {
   const session = SessionManager.inMemory("/tmp");
   let first;
   for (const message of entries) { const id = session.appendMessage(message); first ??= id; }
-  const pi = fakePi(); let request;
-  createServerCompactionController(pi, { summaryFactory: () => "readable local summary", fetchImpl: async (_url, options) => { request = JSON.parse(options.body); return { ok: true, status: 200, json: async () => ({ output: [{ type: "compaction", encrypted_content: "opaque" }], usage: { input_tokens: 3 } }) }; } });
+  const pi = fakePi(); let request; let remoteCalls = 0; let summaryCalls = 0;
+  createServerCompactionController(pi, { summaryFactory: () => { summaryCalls += 1; throw new Error("native summary must not run"); }, fetchImpl: async (_url, options) => { remoteCalls += 1; request = JSON.parse(options.body); return { ok: true, status: 200, json: async () => ({ output: [{ type: "compaction", encrypted_content: "opaque" }], usage: { input_tokens: 3 } }) }; } });
   const ctx = { model, modelRegistry: { getApiKeyAndHeaders: async () => auth }, sessionManager: session, getSystemPrompt: () => "direct system prompt", thinkingLevel: "high" };
   const branchEntries = session.getBranch();
   const result = await pi.handlers.get("session_before_compact")({ preparation: preparation(first), branchEntries, reason: "manual", signal: new AbortController().signal }, ctx);
-  return { result, request, pi, ctx, session };
+  return { result, request, pi, ctx, session, remoteCalls, summaryCalls };
 }
 
 test("direct compaction serializes canonical current-branch messages on its first attempt", async () => {
@@ -34,8 +35,12 @@ test("direct compaction serializes canonical current-branch messages on its firs
     assistantToolCall(),
     { role: "toolResult", toolCallId: "call-1", toolName: "probe", content: [{ type: "text", text: "tool result" }], isError: false, timestamp: 7 },
   ];
-  const { result, request } = await compactCurrentBranch(entries);
+  const { result, request, remoteCalls, summaryCalls } = await compactCurrentBranch(entries);
   assert.equal(result.compaction.details.state, "remote_applied", JSON.stringify(result));
+  assert.equal(result.compaction.summary, BLACKMAGIC_COMPACTION_MARKER);
+  assert.equal(result.compaction.details.checkpoint.artifact.length, 1);
+  assert.equal(remoteCalls, 1);
+  assert.equal(summaryCalls, 0);
   const serialized = JSON.stringify(request);
   assert.match(serialized, /direct system prompt/);
   assert.match(serialized, /custom handoff/);
@@ -90,11 +95,94 @@ test("timeline entries append once after recognized extension compaction only", 
   assert.equal(renderer({ data: { method: "secret-model" } }, {}, { bg: (_key, text) => text, fg: (_key, text) => text }), undefined);
 });
 
-test("direct compaction is independent of auxiliary provider requests and falls back on unsupported models", async () => {
+test("supported serialization, remote, and post-segment failures cancel without Session mutation", async () => {
+  async function run({ getSystemPrompt = () => "system", fetchImpl }) {
+    const session = SessionManager.inMemory("/tmp");
+    const first = session.appendMessage({ role: "user", content: [{ type: "text", text: "unchanged" }], timestamp: 1 });
+    const before = structuredClone(session.getBranch());
+    const pi = fakePi();
+    createServerCompactionController(pi, { fetchImpl });
+    const ctx = { model, modelRegistry: { getApiKeyAndHeaders: async () => auth }, sessionManager: session, getSystemPrompt, thinkingLevel: "high" };
+    const result = await pi.handlers.get("session_before_compact")({ preparation: preparation(first), branchEntries: session.getBranch(), signal: new AbortController().signal }, ctx);
+    assert.deepEqual(result, { cancel: true });
+    assert.deepEqual(session.getBranch(), before);
+  }
+  let serializationRemoteCalls = 0;
+  await run({ getSystemPrompt: () => { throw new Error("serialization unavailable"); }, fetchImpl: async () => { serializationRemoteCalls += 1; } });
+  assert.equal(serializationRemoteCalls, 0);
+  let remoteCalls = 0;
+  await run({ fetchImpl: async () => { remoteCalls += 1; return { ok: false, status: 500, json: async () => ({}) }; } });
+  assert.equal(remoteCalls, 1);
+  let promptCalls = 0; let postRemoteCalls = 0;
+  await run({
+    getSystemPrompt: () => { promptCalls += 1; if (promptCalls === 2) throw new Error("post segment unavailable"); return "system"; },
+    fetchImpl: async () => { postRemoteCalls += 1; return { ok: true, status: 200, json: async () => ({ output: [{ type: "compaction", encrypted_content: "opaque" }] }) }; },
+  });
+  assert.equal(postRemoteCalls, 1);
+});
+
+test("mismatch compaction uses visible History and establishes a new ready checkpoint", async () => {
+  const first = await compactCurrentBranch([{ role: "user", content: [{ type: "text", text: "old branch" }], timestamp: 1 }]);
+  first.session.appendCompaction(first.result.compaction.summary, first.result.compaction.firstKeptEntryId, first.result.compaction.tokensBefore, first.result.compaction.details, true);
+  first.session.appendMessage({ role: "user", content: [{ type: "text", text: "new visible work" }], timestamp: 2 });
+  const selectedModel = { ...model, id: "gpt-5.1", name: "gpt-5.1" };
+  const pi = fakePi(); let request;
+  createServerCompactionController(pi, { fetchImpl: async (_url, options) => { request = JSON.parse(options.body); return { ok: true, status: 200, json: async () => ({ output: [{ type: "compaction", encrypted_content: "new-opaque" }] }) }; } });
+  const branchEntries = first.session.getBranch();
+  const statuses = [];
+  const ctx = { ...first.ctx, model: selectedModel, ui: { setStatus: (...args) => statuses.push(args) } };
+  await pi.handlers.get("session_start")({}, ctx);
+  assert.match(statuses.at(-1)[1], /cannot replay/);
+  const result = await pi.handlers.get("session_before_compact")({ preparation: preparation(branchEntries[0].id), branchEntries, signal: new AbortController().signal }, ctx);
+  assert.equal(result.compaction.details.identity.model, "gpt-5.1");
+  assert.equal(result.compaction.summary, BLACKMAGIC_COMPACTION_MARKER);
+  assert.doesNotMatch(JSON.stringify(request), /\"encrypted_content\":\"opaque\"/);
+  assert.match(JSON.stringify(request), /new visible work/);
+  assert.match(statuses.at(-1)[1], /cannot replay/, "uncommitted handler results must not change footer state");
+  first.session.appendCompaction(result.compaction.summary, result.compaction.firstKeptEntryId, result.compaction.tokensBefore, result.compaction.details, true);
+  await pi.handlers.get("session_compact")({ fromExtension: true, compactionEntry: first.session.getBranch().findLast((entry) => entry.type === "compaction") }, ctx);
+  assert.equal(statuses.at(-1)[1], undefined, "committed compaction recomputes and clears the footer");
+});
+
+test("state hooks restore and clear the single mismatch footer without intercepting input", async () => {
+  const first = await compactCurrentBranch([{ role: "user", content: [{ type: "text", text: "old" }], timestamp: 1 }]);
+  let branch = [{ id: "remote", type: "compaction", summary: BLACKMAGIC_COMPACTION_MARKER, details: first.result.compaction.details }];
+  const pi = fakePi();
+  createServerCompactionController(pi);
+  const statuses = [];
+  const context = (selectedModel) => ({ model: selectedModel, modelRegistry: { getApiKeyAndHeaders: async () => auth }, sessionManager: { getBranch: () => branch }, ui: { setStatus: (...args) => statuses.push(args) } });
+  const mismatch = context({ ...model, id: "gpt-5.1" });
+  await pi.handlers.get("session_start")({}, mismatch);
+  assert.match(statuses.at(-1)[1], /cannot replay/);
+  const matching = context(model);
+  await pi.handlers.get("model_select")({}, matching);
+  assert.equal(statuses.at(-1)[1], undefined);
+  const payload = { model: "gpt-5.1", input: [{ role: "user", content: "visible" }] };
+  assert.deepEqual(await pi.handlers.get("before_provider_request")({ payload }, mismatch), payload);
+  assert.match(statuses.at(-1)[1], /cannot replay/);
+  branch = [{ type: "message", role: "user" }];
+  await pi.handlers.get("session_tree")({}, mismatch);
+  assert.equal(statuses.at(-1)[1], undefined);
+  await pi.handlers.get("session_compact")({ fromExtension: false, compactionEntry: { id: "native", type: "compaction", summary: "readable" } }, mismatch);
+  assert.equal(statuses.at(-1)[1], undefined);
+  await pi.handlers.get("session_start")({}, mismatch);
+  assert.equal(statuses.at(-1)[1], undefined);
+  assert.equal(pi.handlers.has("input"), false);
+});
+
+test("unsupported and unauthorized routes delegate to Pi without remote or summary work", async () => {
   const entry = { role: "user", content: [{ type: "text", text: "one" }], timestamp: 1 };
   const { result, pi, ctx } = await compactCurrentBranch([entry]);
   assert.equal(result.compaction.details.state, "remote_applied");
   assert.equal(pi.handlers.has("message_end"), false);
-  const unsupported = await pi.handlers.get("session_before_compact")({ preparation: preparation("x"), branchEntries: [], signal: new AbortController().signal }, { ...ctx, model: { ...model, baseUrl: "https://proxy.invalid/v1" } });
-  assert.equal(unsupported.compaction.details.failureClass, "model_or_protocol");
+  let remoteCalls = 0; let summaryCalls = 0;
+  const delegatedPi = fakePi();
+  createServerCompactionController(delegatedPi, { summaryFactory: () => { summaryCalls += 1; }, fetchImpl: async () => { remoteCalls += 1; throw new Error("remote must not run"); } });
+  const event = { preparation: preparation("x"), branchEntries: [], signal: new AbortController().signal };
+  const unsupported = await delegatedPi.handlers.get("session_before_compact")(event, { ...ctx, model: { ...model, baseUrl: "https://proxy.invalid/v1" } });
+  const unauthorized = await delegatedPi.handlers.get("session_before_compact")(event, { ...ctx, modelRegistry: { getApiKeyAndHeaders: async () => ({ ok: false }) } });
+  assert.equal(unsupported, undefined);
+  assert.equal(unauthorized, undefined);
+  assert.equal(remoteCalls, 0);
+  assert.equal(summaryCalls, 0);
 });

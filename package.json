@@ -13,7 +13,9 @@
   "peerDependencies": { "@earendil-works/pi-coding-agent": "0.83.0", "@earendil-works/pi-ai": "0.83.0", "@earendil-works/pi-tui": "0.83.0" },
   "scripts": {
     "test": "node --test test/*.test.mjs",
-    "verify:package": "node scripts/verify-package.mjs",
+    "generate:state-machine": "node scripts/generate-state-machine-html.mjs",
+    "check:generated": "node scripts/generate-state-machine-html.mjs --check",
+    "verify:package": "npm run check:generated && node scripts/verify-package.mjs",
     "pack:check": "npm pack --dry-run && npm run verify:package"
   },
   "publishConfig": { "access": "public" },
@@ -22,7 +24,8 @@
     ".": "./src/index.mjs",
     "./extension": "./src/extension.mjs",
     "./contract": "./src/contract.mjs",
-    "./controller": "./src/controller.mjs"
+    "./controller": "./src/controller.mjs",
+    "./state-machine": "./src/state-machine.mjs"
   },
-  "files": ["src", "docs/current", "README.md", "scripts/verify-package.mjs", "LICENSE"]
+  "files": ["src", "docs/current", "docs/design/compaction-state-machine.html", "docs/design/compaction-state-machine.template.html", "README.md", "scripts/generate-state-machine-html.mjs", "scripts/verify-package.mjs", "LICENSE"]
 }

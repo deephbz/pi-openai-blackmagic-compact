@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<title>OpenAI compaction state machine — three states</title>
+<style>
+html { color-scheme: light dark; --ink:#102235; --muted:#496174; --paper:#f7fafc; --panel:#fff; --line:#b8cad8; --blue:#075fc7; --blue-soft:#dcecff; --green:#087443; --green-soft:#ddf5e8; --amber:#995800; --amber-soft:#fff0d6; --focus:#d04b00; --shadow:0 9px 24px rgb(18 45 68 / .12); }
+* { box-sizing:border-box; }
+body { margin:0; background:var(--paper); color:var(--ink); font:16px/1.5 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+main { max-width:1400px; margin:auto; padding:clamp(1rem,4vw,3rem); }
+h1,h2,h3,p { margin-top:0; } h1 { font-size:clamp(2rem,5vw,3.5rem); line-height:1.04; max-width:18ch; } h2 { font-size:1.35rem; } .eyebrow { color:var(--blue); font-weight:800; letter-spacing:.06em; text-transform:uppercase; } .lede { max-width:68ch; color:var(--muted); font-size:1.1rem; }
+.notice { border-left:5px solid var(--amber); background:var(--amber-soft); padding:1rem; border-radius:.35rem; font-weight:650; }
+.concepts { display:grid; grid-template-columns:repeat(3,1fr); gap:1rem; margin:2rem 0; } .concept, .panel { background:var(--panel); border:1px solid var(--line); border-radius:.8rem; padding:1.1rem; box-shadow:var(--shadow); } .concept strong { display:block; color:var(--blue); font-size:1.1rem; } .concept p { margin:.35rem 0 0; }
+.grid { display:grid; grid-template-columns:minmax(0,1.5fr) minmax(18rem,.7fr); gap:1.25rem; align-items:start; }
+.diagram { min-width:0; min-height:0; overflow:visible; } .diagram h2 { margin-bottom:.25rem; } .diagram-note { color:var(--muted); margin-bottom:.35rem; } .scroll-cue { display:none; color:var(--muted); font-size:.85rem; font-weight:750; margin:0 0 .8rem; }
+.canvas { position:relative; width:100%; overflow-x:auto; border-radius:.65rem; background:linear-gradient(135deg,#f9fcff,#eef5fa); border:1px solid var(--line); }
+#state-graph { display:block; min-width:780px; width:100%; height:auto; }
+.graph-item { cursor:pointer; } .edge-path { fill:none; stroke:var(--muted); stroke-width:2.8; marker-end:url(#arrow); } .edge-hit { fill:none; stroke:transparent; stroke-width:18; } .edge-label { fill:var(--ink); font-size:15px; font-weight:750; text-anchor:middle; paint-order:stroke; stroke:#f7fafc; stroke-width:5.5px; stroke-linejoin:round; } .node { fill:var(--panel); stroke:var(--blue); stroke-width:3; } .node.ready { stroke:var(--green); } .node.mismatch { stroke:var(--amber); } .node-name { fill:var(--blue); font-size:18px; font-weight:850; text-anchor:middle; } .node-name.ready { fill:var(--green); } .node-name.mismatch { fill:var(--amber); } .node-description { fill:var(--muted); font-size:13px; text-anchor:middle; } .graph-item:hover .edge-path,.graph-item.active .edge-path,.graph-item.selected .edge-path { stroke:var(--blue); stroke-width:4.5; } .graph-item:hover .node,.graph-item.active .node,.graph-item.selected .node { stroke-width:5; } .graph-item.active .node { filter:url(#active-glow); } .graph-item.active .node.mismatch { filter:url(#mismatch-glow); } .graph-item:focus-visible { outline:none; } .graph-item:focus-visible .edge-path,.graph-item:focus-visible .node { stroke:var(--focus); stroke-width:5; } .graph-item:focus-visible .node { filter:url(#focus-glow); }
+.tooltip { position:absolute; z-index:3; max-width:18rem; padding:.55rem .7rem; border-radius:.4rem; background:#102235; color:#fff; font-size:.82rem; line-height:1.3; box-shadow:var(--shadow); pointer-events:none; }
+.stepper button:focus-visible,select:focus-visible { outline:4px solid var(--focus); outline-offset:3px; }
+.detail { min-height:220px; } .detail h3 { color:var(--blue); margin-bottom:.5rem; } .detail dl { margin:0; } .detail dt { margin-top:.75rem; font-weight:800; } .detail dd { margin:.1rem 0 0; color:var(--muted); }
+.controls label { display:block; font-weight:750; margin-bottom:.35rem; } select,button { font:inherit; } select { width:100%; padding:.65rem; border:2px solid var(--line); border-radius:.45rem; background:var(--panel); color:var(--ink); } .stepper { display:flex; gap:.75rem; margin-top:1rem; } .stepper button { flex:1; border:2px solid var(--blue); border-radius:.45rem; background:var(--panel); color:var(--blue); padding:.65rem; font-weight:750; cursor:pointer; } .stepper button:hover:not(:disabled) { background:var(--blue-soft); } .stepper button:disabled { opacity:.5; cursor:not-allowed; } .step-status { color:var(--muted); margin:.8rem 0 0; font-weight:650; }
+.explanation { margin-top:1.25rem; } .explanation p { margin-bottom:.75rem; } .explanation strong { color:var(--blue); } .hint { color:var(--muted); font-size:.9rem; margin-top:1rem; }
+.sr-only { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
+@media (max-width:760px) { .concepts,.grid { grid-template-columns:1fr; } .scroll-cue { display:block; } .canvas { margin-inline:-.15rem; } #state-graph { width:960px; } }
+@media (prefers-reduced-motion:no-preference) { .edge-path,.node { transition:stroke .18s ease,stroke-width .18s ease,filter .18s ease; } }
+@media print { body { background:#fff; color:#000; } main { max-width:none; padding:0; } .notice { border:1px solid #000; } .concept,.panel { box-shadow:none; } .controls,.hint { display:none; } .diagram { break-inside:avoid; } .canvas { min-height:430px; } }
+</style>
+</head>
+<body>
+<main>
+  <p class="eyebrow">Generated · executable projection</p>
+  <h1>OpenAI compaction, shown as three things</h1>
+  <p class="lede">Use the map to see what Pi carries, whether the selected Route can use it, and what happens when Pi makes it smaller. The state recomputes after Route, tree, compaction, or restart changes.</p>
+  <p class="notice">This view is generated from the executable state machine. Edit the code authority, then regenerate this file.</p>
+  <section aria-labelledby="concept-title">
+    <h2 id="concept-title">The three concepts</h2>
+    <div id="concepts" class="concepts"></div>
+  </section>
+  <div class="grid">
+    <section class="panel diagram" aria-labelledby="diagram-title">
+      <h2 id="diagram-title">State map</h2>
+      <p class="diagram-note">Select a state or arrow for its detail. Hover gives the same detail.</p>
+      <p class="scroll-cue">Scroll map sideways →</p>
+      <div id="canvas" class="canvas" aria-label="Three-state compaction map"><div id="tooltip" class="tooltip" role="tooltip" hidden></div></div>
+    </section>
+    <aside class="panel detail" aria-live="polite" aria-labelledby="detail-title">
+      <h2 id="detail-title">Selected detail</h2>
+      <div id="detail-content"></div>
+    </aside>
+  </div>
+  <section class="panel controls" aria-labelledby="scenario-title" style="margin-top:1.25rem">
+    <h2 id="scenario-title">Try a path</h2>
+    <label for="scenario">Scenario</label>
+    <select id="scenario"></select>
+    <div class="stepper"><button id="previous" type="button">Previous</button><button id="next" type="button">Next</button></div>
+    <p id="step-status" class="step-status"></p>
+    <div id="explanation" class="explanation"></div>
+    <p class="hint">Keyboard: Tab selects controls and map items. Enter or Space opens detail. Left and Right change steps.</p>
+  </section>
+</main>
+<script id="machine-data" type="application/json">
+{{MACHINE_JSON}}
+</script>
+<script>
+(() => {
+  const data = JSON.parse(document.getElementById('machine-data').textContent);
+  const byId = Object.fromEntries(data.transitions.map(item => [item.id, item]));
+  const stateName = id => data.states.find(s => s.id === id).name;
+  const canvas = document.getElementById('canvas');
+  const detail = document.getElementById('detail-content');
+  const tooltip = document.getElementById('tooltip');
+  const select = document.getElementById('scenario');
+  const previous = document.getElementById('previous');
+  const next = document.getElementById('next');
+  const status = document.getElementById('step-status');
+  const explanation = document.getElementById('explanation');
+  let scenarioIndex = 0, stepIndex = 0;
+  document.getElementById('concepts').innerHTML = data.concepts.map(item => `<article class="concept"><strong>${item.name}</strong><p>${item.description}</p></article>`).join('');
+  select.innerHTML = data.scenarios.map((item, index) => `<option value="${index}">${item.name}</option>`).join('');
+  function showDetail(item, kind) {
+    const heading = kind === 'state' ? item.name : item.event;
+    const rows = kind === 'state'
+      ? `<dt>Meaning</dt><dd>${item.description}</dd>${item.note ? `<dt>Note</dt><dd>${item.note}</dd>` : ''}`
+      : `<dt>From</dt><dd>${stateName(item.source)}</dd><dt>Action</dt><dd>${item.action}</dd><dt>To</dt><dd>${stateName(item.target)}</dd><dt>Why</dt><dd>${item.reason}</dd>`;
+    detail.innerHTML = `<h3>${heading}</h3><dl>${rows}</dl>`;
+  }
+  function showTooltip(item, kind, element) {
+    const text = kind === 'state' ? item.description : `${item.action}. ${item.reason}`;
+    tooltip.textContent = `${kind === 'state' ? item.name : item.event}: ${text}`;
+    tooltip.hidden = false;
+    const box = element.getBoundingClientRect(), host = canvas.getBoundingClientRect();
+    const left = Math.max(6, Math.min(box.left - host.left + box.width / 2 - tooltip.offsetWidth / 2, canvas.clientWidth - tooltip.offsetWidth - 6));
+    tooltip.style.left = `${left}px`; tooltip.style.top = `${Math.max(6, box.top - host.top - tooltip.offsetHeight - 7)}px`;
+  }
+  function hideTooltip() { tooltip.hidden = true; }
+  const svgNS = 'http://www.w3.org/2000/svg';
+  const make = (name, attributes = {}) => {
+    const element = document.createElementNS(svgNS, name);
+    Object.entries(attributes).forEach(([key, value]) => element.setAttribute(key, value));
+    return element;
+  };
+  // Layout is separate from the accepted machine. It supplies only geometry.
+  const stateLayout = {
+    summary: { x:40, y:240, width:310, height:110 },
+    ready: { x:610, y:70, width:310, height:140 },
+    mismatch: { x:610, y:350, width:310, height:140 }
+  };
+  const edgeLayout = {
+    'summary-stays': { d:'M215 240 C 190 165, 265 162, 275 240', label:[240,156,24] },
+    'summary-blackmagic': { d:'M350 300 C 470 155, 545 155, 612 155', label:[480,126,24] },
+    'summary-mismatch': { d:'M350 325 C 450 350, 530 385, 610 400', label:[480,360,24] },
+    'blackmagic-summary': { d:'M610 120 C 500 70, 420 170, 350 250', label:[470,72,24] },
+    'blackmagic-ready': { d:'M720 70 C 690 5, 800 5, 780 70', label:[755,12,26] },
+    'blackmagic-mismatch': { d:'M610 185 C 535 230, 535 310, 610 355', label:[520,272,24] },
+    'mismatch-summary': { d:'M620 470 C 550 525, 425 505, 352 375', label:[490,525,26] },
+    'mismatch-ready': { d:'M920 355 C 960 310, 960 230, 920 185', label:[935,268,24] },
+    'mismatch-mismatch': { d:'M750 490 C 725 552, 825 552, 800 490', label:[775,560,26] }
+  };
+  function wrappedLines(text, width) {
+    const words = text.split(' '), lines = [''];
+    words.forEach(word => {
+      const line = lines[lines.length - 1];
+      if (line && `${line} ${word}`.length > width) lines.push(word);
+      else lines[lines.length - 1] = line ? `${line} ${word}` : word;
+    });
+    return lines;
+  }
+  function label(text, [x, y, width]) {
+    const node = make('text', { class:'edge-label', x, y });
+    const lines = wrappedLines(text, width);
+    lines.forEach((line, index) => {
+      const span = make('tspan', { x, dy:index ? 16 : -(lines.length - 1) * 8 });
+      span.textContent = line; node.append(span);
+    });
+    return node;
+  }
+  function wireInteraction(element, item, kind) {
+    const select = () => {
+      document.querySelectorAll('.graph-item').forEach(node => node.classList.remove('selected'));
+      element.classList.add('selected'); showDetail(item, kind);
+    };
+    element.addEventListener('mouseenter', () => { showDetail(item, kind); showTooltip(item, kind, element); });
+    element.addEventListener('focus', () => { showDetail(item, kind); showTooltip(item, kind, element); });
+    element.addEventListener('mouseleave', hideTooltip); element.addEventListener('blur', hideTooltip);
+    element.addEventListener('click', select);
+    element.addEventListener('keydown', event => {
+      if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); select(); }
+    });
+  }
+  const svg = make('svg', { id:'state-graph', viewBox:'0 -20 1040 610', role:'group', 'aria-label':'Three-state compaction state-transition diagram' });
+  const defs = make('defs');
+  const marker = make('marker', { id:'arrow', viewBox:'0 0 10 10', refX:'8', refY:'5', markerWidth:'7', markerHeight:'7', orient:'auto-start-reverse' });
+  marker.append(make('path', { d:'M 0 0 L 10 5 L 0 10 z', fill:'#496174' })); defs.append(marker);
+  [['active-glow','#dcecff'], ['mismatch-glow','#fff0d6'], ['focus-glow','#d04b00']].forEach(([id, color]) => {
+    const filter = make('filter', { id, x:'-20%', y:'-30%', width:'140%', height:'160%' });
+    filter.append(make('feDropShadow', { dx:'0', dy:'0', stdDeviation:'5', 'flood-color':color, 'flood-opacity':'1' })); defs.append(filter);
+  });
+  svg.append(defs);
+  const edges = make('g', { 'aria-label':'Transitions' });
+  data.transitions.forEach(item => {
+    const layout = edgeLayout[item.id], group = make('g', { id:`edge-${item.id}`, class:'graph-item edge', role:'button', tabindex:'0', 'aria-describedby':'tooltip', 'aria-label':`${item.event}. From ${stateName(item.source)} to ${stateName(item.target)}. ${item.action}. ${item.reason}` });
+    group.append(make('path', { d:layout.d, class:'edge-path' }));
+    group.append(make('path', { d:layout.d, class:'edge-hit' })); group.append(label(item.event, layout.label));
+    wireInteraction(group, item, 'edge'); edges.append(group);
+  });
+  svg.append(edges);
+  const states = make('g', { 'aria-label':'States' });
+  data.states.forEach(item => {
+    const layout = stateLayout[item.id], group = make('g', { id:`state-${item.id}`, class:'graph-item state', role:'button', tabindex:'0', 'aria-describedby':'tooltip', 'aria-label':`${item.name}: ${item.description}` });
+    group.append(make('rect', { x:layout.x, y:layout.y, width:layout.width, height:layout.height, rx:'16', class:`node ${item.id}` }));
+    const name = make('text', { x:layout.x + layout.width / 2, y:layout.y + 39, class:`node-name ${item.id}` }); name.textContent = item.name; group.append(name);
+    const description = wrappedLines(item.description, 36);
+    description.forEach((line, index) => { const text = make('text', { x:layout.x + layout.width / 2, y:layout.y + 63 + index * 17, class:'node-description' }); text.textContent = line; group.append(text); });
+    wireInteraction(group, item, 'state'); states.append(group);
+  });
+  svg.append(states); canvas.insertBefore(svg, tooltip);
+  function renderStep() {
+    const scenario = data.scenarios[scenarioIndex], step = scenario.steps[stepIndex];
+    document.querySelectorAll('.state,.edge').forEach(el => el.classList.remove('active'));
+    document.getElementById(`state-${step.state}`).classList.add('active');
+    if (step.transition) document.getElementById(`edge-${step.transition}`).classList.add('active');
+    status.textContent = `${scenario.name}: step ${stepIndex + 1} of ${scenario.steps.length}`;
+    explanation.innerHTML = `<p><strong>What happened</strong><br>${step.happened}</p><p><strong>Why</strong><br>${step.why}</p><p><strong>What Pi may do</strong><br>${step.mayDo}</p>`;
+    const selected = step.transition ? byId[step.transition] : data.states.find(s => s.id === step.state);
+    showDetail(selected, step.transition ? 'edge' : 'state');
+    previous.disabled = stepIndex === 0; next.disabled = stepIndex === scenario.steps.length - 1;
+  }
+  select.addEventListener('change', () => { scenarioIndex=Number(select.value); stepIndex=0; renderStep(); });
+  previous.addEventListener('click', () => { if (stepIndex) { stepIndex--; renderStep(); } });
+  next.addEventListener('click', () => { const steps=data.scenarios[scenarioIndex].steps; if (stepIndex < steps.length-1) { stepIndex++; renderStep(); } });
+  document.addEventListener('keydown', event => { if ((event.key==='ArrowLeft' || event.key==='ArrowRight') && !/SELECT|INPUT|TEXTAREA/.test(document.activeElement.tagName)) { event.preventDefault(); event.key==='ArrowLeft' ? previous.click() : next.click(); } });
+  renderStep();
+})();
+</script>
+</body>
+</html>

@@ -127,6 +127,45 @@ test("public request hook replays only its named checkpoint into provider payloa
   assert.deepEqual(original.input[0].role, "user", "request hook returns a replacement rather than mutating caller payload");
 });
 
+test("invalid active Blackmagic records stay PROVIDER_MISMATCH and never intercept payloads", async () => {
+  const identity = { surface: "openai_api", protocol: "responses_compact_v1", endpoint: "https://api.openai.com/v1", model: "gpt-5", api: "openai-responses" };
+  const original = { model: "gpt-5", input: [{ role: "user", content: "visible payload" }] };
+  const base = checkpointDetails({ identity, opaqueWindow: [{ type: "compaction", encrypted_content: "opaque" }] });
+  base.replay = { namespace: "pi-openai-blackmagic-compact/1", replacedItemHashes: [sha256(original.input[0])] };
+  const cases = [
+    ["invalid artifact hash", (details) => { details.checkpoint.hash = "invalid"; }],
+    ["empty artifact", (details) => { details.checkpoint.artifact = []; }],
+    ["invalid replay hash", (details) => { details.replay.replacedItemHashes = ["invalid"]; }],
+    ["invalid replay schema", (details) => { details.replay.namespace = "unknown-replay/1"; }],
+    ["exact replay-segment failure", (_details) => {}],
+  ];
+  for (const [label, mutate] of cases) {
+    const details = structuredClone(base);
+    mutate(details);
+    const pi = fakePi();
+    createServerCompactionController(pi);
+    const statuses = [];
+    const ctx = { ...controllerContext([{ id: `remote-${label}`, type: "compaction", details }]), ui: { setStatus: (...args) => statuses.push(args) } };
+    await pi.handlers.get("session_start")({}, ctx);
+    if (label !== "exact replay-segment failure") assert.match(statuses.at(-1)[1], /cannot replay/, label);
+    const payload = { ...original, input: [{ role: "user", content: "different visible payload" }] };
+    assert.deepEqual(await pi.handlers.get("before_provider_request")({ payload }, ctx), payload, label);
+    assert.match(statuses.at(-1)[1], /cannot replay/, label);
+  }
+  const clearCases = [[], [{ type: "compaction", summary: "readable native summary" }], [{ type: "compaction", details: { schemaVersion: 1, state: "local_fallback", failureClass: "remote_error" } }]];
+  for (const branch of clearCases) {
+    const pi = fakePi();
+    createServerCompactionController(pi);
+    const statuses = [];
+    const ctx = { ...controllerContext(branch), ui: { setStatus: (...args) => statuses.push(args) } };
+    await pi.handlers.get("session_start")({}, ctx);
+    assert.equal(statuses.at(-1)[1], undefined, JSON.stringify(branch));
+    const payload = { model: "gpt-5", input: [{ role: "user", content: "readable" }] };
+    assert.deepEqual(await pi.handlers.get("before_provider_request")({ payload }, ctx), payload);
+    assert.equal(statuses.at(-1)[1], undefined, JSON.stringify(branch));
+  }
+});
+
 test("only the latest active replay-capable checkpoint can replay", async () => {
   const pi = fakePi(); createServerCompactionController(pi, { summaryFactory: () => "local summary" });
   const identity = { surface: "openai_api", protocol: "responses_compact_v1", endpoint: "https://api.openai.com/v1", model: "gpt-5", api: "openai-responses" };
@@ -134,17 +173,17 @@ test("only the latest active replay-capable checkpoint can replay", async () => 
   const remote = { type: "compaction", details: checkpointDetails({ identity, opaqueWindow: [{ type: "compaction", encrypted_content: "opaque" }] }) };
   remote.details.replay = { namespace: "pi-openai-blackmagic-compact/1", replacedItemHashes: [sha256(original.input[0])] };
   const local = { type: "compaction", details: { schemaVersion: 1, state: "local_fallback", failureClass: "timeout" } };
-  assert.equal(await pi.handlers.get("before_provider_request")({ payload: original }, controllerContext([remote, local])), undefined);
+  assert.deepEqual(await pi.handlers.get("before_provider_request")({ payload: original }, controllerContext([remote, local])), original);
 
   const emptyReplayHash = structuredClone(remote);
   emptyReplayHash.details.replay.replacedItemHashes = [""];
-  assert.equal(await pi.handlers.get("before_provider_request")({ payload: original }, controllerContext([emptyReplayHash])), undefined);
+  assert.deepEqual(await pi.handlers.get("before_provider_request")({ payload: original }, controllerContext([emptyReplayHash])), original);
   const corrupted = structuredClone(remote);
   corrupted.details.checkpoint.hash = "invalid";
-  assert.equal(await pi.handlers.get("before_provider_request")({ payload: original }, controllerContext([corrupted])), undefined);
+  assert.deepEqual(await pi.handlers.get("before_provider_request")({ payload: original }, controllerContext([corrupted])), original);
   const empty = structuredClone(remote);
   empty.details.checkpoint.artifact = [];
   empty.details.checkpoint.length = 2;
   empty.details.checkpoint.hash = sha256("[]");
-  assert.equal(await pi.handlers.get("before_provider_request")({ payload: original }, controllerContext([empty])), undefined);
+  assert.deepEqual(await pi.handlers.get("before_provider_request")({ payload: original }, controllerContext([empty])), original);
 });

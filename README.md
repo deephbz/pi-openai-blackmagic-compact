@@ -1,18 +1,16 @@
 # @hypercarrier/pi-openai-blackmagic-compact
 
-Direct server compaction for the Pi branch you are using now.
+Remote-first server compaction for the current Pi branch.
 
-Blackmagic keeps Pi in charge of the readable summary and the Session change. When one of three approved OpenAI-family surfaces can compact the branch, it adds one provider checkpoint. When it cannot, Pi keeps working with its local summary. No ceremony. No provider wrapper. No extension configuration.
+The executable contract lives in [`src/state-machine.mjs`](src/state-machine.mjs), and focused behavior lives in the controller and tests. The HTML state-machine view is generated output; edit code, then regenerate it. For the full current contract, see [docs/current/README.md](docs/current/README.md).
 
-For the full current contract, see [docs/current/README.md](docs/current/README.md).
+The published `0.1.0-rc.3` remains the last release. Its documented path created Pi's native readable summary before the remote attempt. This working tree changes that path to remote-first; it is unreleased and has no assigned release version.
 
 ## A normal day
 
-You work through a long Pi session. You run `/compact`. You want Pi's useful readable summary, but you also want an approved server-side compaction when the current model supports it.
+You run `/compact` in a long Pi Session. On a supported and authorized OpenAI-family Route, Blackmagic runs first. On success, Pi skips its native readable summary and stores one fixed Blackmagic marker with one opaque provider checkpoint. The current History stays unchanged until Pi applies that returned compaction.
 
-Without Blackmagic, Pi makes its normal local summary. That is always the safe path.
-
-With Blackmagic, Pi still makes and saves that summary. Blackmagic derives the current branch through Pi's normal serializer on the first compaction attempt. It then uses the approved compact protocol when the active surface and authorization permit it. If any required step fails, Pi uses its local fallback. The extension does not turn a compaction failure into a new kind of session drama.
+On an unsupported or unauthorized Route, Blackmagic returns control to Pi, so Pi performs its normal native summary once. On a supported failure during serialization, remote compaction, or post-segment validation, Blackmagic returns cancel and leaves History unchanged. Pi remains in control of the Session record.
 
 ## Install and use
 
@@ -44,25 +42,27 @@ It does not claim general provider support. Other models and unsupported conditi
 
 ## What you see
 
-After a recognized Blackmagic compaction, Pi adds one durable TUI timeline card beside its built-in compaction record:
+After a successful Blackmagic compaction, Pi adds one durable TUI timeline card beside the compaction record:
 
 ```text
 [server compaction] OpenAI/Azure Responses v1 applied
 ```
 
-The card can also show Codex v2 or a local fallback with an allowlisted failure class. It stores only that small redacted display result. It does not enter LLM context, so it does not change replay, serializer input, or compaction selection.
+It stores only a small redacted display result. It does not enter LLM context, so it does not change replay, serializer input, or compaction selection. A failure does not create a fallback card or Session warning.
 
 ## How it works
 
-Pi first creates the readable summary. During `session_before_compact`, Blackmagic derives the authoritative current branch with Pi's canonical conversion and native serializer. It uses that result for an approved server compaction attempt.
+During `session_before_compact`, Blackmagic derives the authoritative current branch with Pi's canonical conversion and native serializer. It uses that result for an approved server compaction attempt before Pi's native summary.
 
-Pi then owns and persists the returned atomic Session mutation. On success, the package stores one opaque provider window in the normal compaction details. Later requests can replay that checkpoint only when the active branch and approved provider identity match. The timeline card follows `session_compact` as a separate TUI-only custom entry.
+On success, the package returns one Pi `CompactionEntry` with the fixed `BLACKMAGIC_COMPACTION_MARKER`, validated opaque provider details, and replay lineage. Pi owns and persists the atomic Session mutation. Later requests replay that checkpoint only when the active branch and approved provider identity match. The package also reads the legacy `hc-openai-server-compaction/3` checkpoint namespace for old records. The timeline card follows `session_compact` as a separate TUI-only custom entry.
 
-This boundary is deliberate: Pi owns the conversation record. Blackmagic adds a narrow server checkpoint path. It does not register or wrap providers, observe normal provider calls, create handoffs, or change thresholds.
+A provider mismatch is derived state. Blackmagic shows one footer warning while `PROVIDER_MISMATCH` holds, clears it on state exit, and never restricts actions, intercepts input, appends a warning Session entry, or persists warning history. Normal requests continue with their unchanged payload when replay is unavailable.
+
+This boundary is deliberate: Pi owns the conversation record. Blackmagic adds a narrow server checkpoint path. It does not own or wrap provider transport, create handoffs, or change thresholds. Its request hook only inspects and rewrites the provider payload for checkpoint replay; on mismatch it returns the unchanged payload.
 
 ## Safety and persistence
 
-The local fallback is always available. Blackmagic rejects unsupported surfaces and unsafe replay conditions instead of guessing.
+Pi's native summary remains available for unsupported or unauthorized Routes. A replay mismatch is warning-only: Blackmagic leaves the visible payload and all Pi actions available, while a later compaction can use visible History and establish a new checkpoint.
 
 Session data can contain opaque provider artifacts. Treat the session file as sensitive history. The visible timeline entry is redacted: it does not persist or render prompts, tools, credentials, endpoints, deployments, models, opaque artifacts, hashes, usage data, or identity objects.
 
@@ -78,4 +78,4 @@ npm run verify:package
 npm run pack:check
 ```
 
-All 21 rc.3 tests pass. The suite checks provider contracts, direct current-branch serialization, replay and restart boundaries, timeline persistence, redaction, LLM-context exclusion, package contents, and RPC loading.
+The working-tree suite checks provider contracts, direct current-branch serialization, remote-first ownership, replay and restart boundaries, mismatch freedom, timeline persistence, redaction, generated output, package contents, and RPC loading.
