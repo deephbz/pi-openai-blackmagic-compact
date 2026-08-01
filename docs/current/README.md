@@ -50,26 +50,29 @@ this document does not duplicate its machine table.
 
 The controller recomputes coarse state on `session_start`, `model_select`,
 `session_tree`, and `session_compact`. It refines that state from actual replay
-success or failure in `before_provider_request`.
+success or failure in `before_provider_request`, and it clears its footer on
+`session_shutdown`.
 
 `SUMMARY_STAYS_READABLE` means Pi has readable History. `BLACKMAGIC_READY`
-means opaque History matches the selected Route. `PROVIDER_MISMATCH` means
-opaque History cannot replay on the selected Route. The mismatch is derived
-state only: it shows one footer warning, clears that warning on state exit, and
-never restricts actions, intercepts input, appends a warning Session entry,
-prompts, confirms, cancels user sends, registers input handling, or injects
-warning context. When replay is unavailable, the visible provider payload is
-unchanged. A mismatch compaction may proceed from visible History and establish
-a new matching checkpoint.
+means opaque History matches the selected Route, so the footer tells the user
+to keep the current model and provider. `PROVIDER_MISMATCH` means opaque History
+cannot replay on the selected Route, so the footer tells the user to switch
+back or use `/tree`. These are derived states only. They never restrict actions,
+intercept input, append a warning Session entry, prompt, confirm, cancel user
+sends, register input handling, or inject warning context. When replay is
+unavailable, the visible provider payload is unchanged. A mismatch compaction
+may proceed from visible History and establish a new matching checkpoint.
 
 ## Persistence and compatibility
 
 Pi owns the conversation record and Session mutation. A successful remote
 operation stores one opaque provider artifact in typed `CompactionEntry.details`
-and a fixed marker in the readable compaction summary. The custom timeline
-entry is redacted and remains outside LLM context. The package reads both the
-current replay namespace and legacy `hc-openai-server-compaction/3` records, so
-older sessions remain readable and compatible with the redacted timeline path.
+and a fixed marker in the readable compaction summary. Blackmagic uses Pi's one
+built-in compaction entry and does not append a second timeline entry. Pi 0.83
+does not expose a public extension API for changing the collapsed built-in
+compaction component, so Blackmagic does not patch private Pi TUI code. The
+package reads both the current replay namespace and legacy
+`hc-openai-server-compaction/3` records.
 
 The opaque artifact stays usable only when its active branch, provider identity,
 and replay segment match. A mismatch does not deny transport or ordinary user
@@ -83,8 +86,9 @@ Focused tests cover all three protocol adapters, canonical current-branch
 serialization, zero native-summary calls on remote success, one remote call,
 one marker entry, one opaque artifact, unsupported and unauthorized delegation,
 supported failure cancellation without Session mutation, replay and restart
-boundaries, mismatch freedom, state-hook footer behavior, legacy records,
-redaction, generated output, package contents, and RPC loading.
+boundaries, mismatch freedom, ready/mismatch footer behavior, one native
+compaction entry, legacy records, human-facing status redaction, generated
+output, package contents, and RPC loading.
 
 Official OpenAI and Azure authenticated canaries remain live-unverified. Pi's
 native compaction remains the dependable path for unsupported or unauthorized
@@ -92,8 +96,8 @@ Routes.
 
 ## Architecture impact
 
-None. This change moves the stabilized Blackmagic behavior from shaping prose
-and the HTML projection into the child package's executable authority. It does
-not change HyperCarrier component responsibility, authority, dependency
-direction, data flow, persistence boundary, deployment topology, or the
-implementation-status claims in the root current docs or Structurizr DSL.
+None. This change keeps Pi as the sole compaction-entry owner and removes a
+redundant Blackmagic transcript projection. The root phase record now reflects
+that implementation detail. Component responsibility, authority, dependency
+direction, data flow, persistence boundary, deployment topology, and the
+Structurizr DSL do not change.

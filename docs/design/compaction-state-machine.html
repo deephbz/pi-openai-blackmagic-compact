@@ -83,18 +83,21 @@ h1,h2,h3,p { margin-top:0; } h1 { font-size:clamp(2rem,5vw,3.5rem); line-height:
       "id": "summary",
       "name": "SUMMARY_STAYS_READABLE",
       "description": "History is readable text. Pi can continue from it.",
+      "footer": null,
       "note": "Readable History works with any selected Route. Blackmagic can make it opaque when the selected Route supports it."
     },
     {
       "id": "ready",
       "name": "BLACKMAGIC_READY",
       "description": "Opaque History is usable on the selected Route.",
-      "note": "Opaque History is usable because the selected Route matches it. The state recomputes after Route, tree, compaction, or restart changes."
+      "footer": "Blackmagic active · keep this model and provider",
+      "note": "Opaque History is usable because the selected Route matches it. The footer tells the user to keep the current model and provider. The state recomputes after Route, tree, compaction, or restart changes."
     },
     {
       "id": "mismatch",
       "name": "PROVIDER_MISMATCH",
       "description": "Opaque History and the selected Route do not pair. All actions remain available. Only one persistent footer warning is shown.",
+      "footer": "Blackmagic History unavailable · switch back or use /tree",
       "note": "Pi allows every action. The extension shows one persistent footer warning while the condition holds; it does not append a warning for every message and does not persist the warning as Session history. The state recomputes after Route, tree, compaction, or restart changes."
     }
   ],

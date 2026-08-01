@@ -3,8 +3,9 @@
 export const SUMMARY_STAYS_READABLE = "SUMMARY_STAYS_READABLE";
 export const BLACKMAGIC_READY = "BLACKMAGIC_READY";
 export const PROVIDER_MISMATCH = "PROVIDER_MISMATCH";
-export const BLACKMAGIC_COMPACTION_MARKER = "[Blackmagic compaction checkpoint — opaque History requires its matching OpenAI Route]";
-export const PROVIDER_MISMATCH_WARNING = "Blackmagic History cannot replay on this Route. Pi actions remain available.";
+export const BLACKMAGIC_COMPACTION_MARKER = "Server-side compaction applied. Keep this model and provider to use the compacted History.";
+export const BLACKMAGIC_READY_NOTICE = "Blackmagic active · keep this model and provider";
+export const PROVIDER_MISMATCH_WARNING = "Blackmagic History unavailable · switch back or use /tree";
 
 export const CONTINUATION_REPLAY = Object.freeze({
   UNKNOWN: "unknown",
@@ -51,18 +52,21 @@ export const STATE_MACHINE = deepFreeze({
       "id": "summary",
       "name": SUMMARY_STAYS_READABLE,
       "description": "History is readable text. Pi can continue from it.",
+      "footer": null,
       "note": "Readable History works with any selected Route. Blackmagic can make it opaque when the selected Route supports it."
     },
     {
       "id": "ready",
       "name": BLACKMAGIC_READY,
       "description": "Opaque History is usable on the selected Route.",
-      "note": "Opaque History is usable because the selected Route matches it. The state recomputes after Route, tree, compaction, or restart changes."
+      "footer": BLACKMAGIC_READY_NOTICE,
+      "note": "Opaque History is usable because the selected Route matches it. The footer tells the user to keep the current model and provider. The state recomputes after Route, tree, compaction, or restart changes."
     },
     {
       "id": "mismatch",
       "name": PROVIDER_MISMATCH,
       "description": "Opaque History and the selected Route do not pair. All actions remain available. Only one persistent footer warning is shown.",
+      "footer": PROVIDER_MISMATCH_WARNING,
       "note": "Pi allows every action. The extension shows one persistent footer warning while the condition holds; it does not append a warning for every message and does not persist the warning as Session history. The state recomputes after Route, tree, compaction, or restart changes."
     }
   ],
@@ -345,6 +349,22 @@ export const STATE_MACHINE = deepFreeze({
 
 export const STATE_NAMES = Object.freeze([SUMMARY_STAYS_READABLE, BLACKMAGIC_READY, PROVIDER_MISMATCH]);
 export const TRANSITIONS = STATE_MACHINE.transitions;
+
+/** Project one derived continuation state into the human-only footer. */
+export function continuationFooter(state) {
+  return STATE_MACHINE.states.find((candidate) => candidate.name === state)?.footer ?? undefined;
+}
+
+/** Project machine state into the on-demand human command response. */
+export function projectBlackmagicStatus({ state, serverCompactionAvailable = false } = {}) {
+  let lines;
+  if (state === SUMMARY_STAYS_READABLE) lines = ["History: Readable."];
+  else if (state === BLACKMAGIC_READY) lines = ["History: Server-side compacted and available.", "Action: Keep this model and provider."];
+  else if (state === PROVIDER_MISMATCH) lines = ["History: Server-side compacted but unavailable here.", "Action: Switch back, or select a readable point with /tree."];
+  else throw new TypeError(`unknown continuation state: ${state}`);
+  lines.push(`Next /compact: ${serverCompactionAvailable ? "Server-side compaction." : "Pi compaction."}`);
+  return lines.join("\n");
+}
 
 /** Classify the selected History/Route pair without changing either input. */
 export function classifyContinuation({ opaqueHistory = false, routeMatches = false, replay = CONTINUATION_REPLAY.UNKNOWN } = {}) {

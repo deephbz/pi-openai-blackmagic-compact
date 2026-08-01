@@ -1,9 +1,8 @@
 import { buildSessionContext, convertToLlm } from "@earendil-works/pi-coding-agent";
 import { azureOpenAIResponsesApi, openAICodexResponsesApi, openAIResponsesApi } from "@earendil-works/pi-ai/compat";
-import { Box, Text } from "@earendil-works/pi-tui";
 import { compactCodex, compactResponses } from "./adapters.mjs";
-import { COMPACTION_TIMELINE_ENTRY_TYPE, compactionTimelineData, compactionTimelineLabel, describeRemoteRoute, identifySurface, identityMatches, latestActiveCompaction, projectCompactionMethod, replaceOneHashSegment, safeTelemetry, sha256 } from "./contract.mjs";
-import { BLACKMAGIC_COMPACTION_MARKER, COMPACTION_DECISION, COMPACTION_OUTCOME, CONTINUATION_REPLAY, PROVIDER_MISMATCH, PROVIDER_MISMATCH_WARNING, SUMMARY_STAYS_READABLE, classifyContinuation, decideCompaction } from "./state-machine.mjs";
+import { identifySurface, identityMatches, latestActiveCompaction, replaceOneHashSegment, safeTelemetry, sha256 } from "./contract.mjs";
+import { BLACKMAGIC_COMPACTION_MARKER, COMPACTION_DECISION, COMPACTION_OUTCOME, CONTINUATION_REPLAY, SUMMARY_STAYS_READABLE, classifyContinuation, continuationFooter, decideCompaction, projectBlackmagicStatus } from "./state-machine.mjs";
 
 const DELEGATES = Object.freeze({
   "openai-responses": openAIResponsesApi().streamSimple,
@@ -58,6 +57,13 @@ function rewriteReplay(payload, checkpoint, identity) {
   const next = replaceOneHashSegment(payload.input, replay.replacedItemHashes, checkpoint.details.checkpoint?.artifact);
   return next ? { ...payload, input: next } : undefined;
 }
+async function resolveAuth(ctx) {
+  try {
+    return ctx?.model && typeof ctx?.modelRegistry?.getApiKeyAndHeaders === "function" ? await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model) : undefined;
+  } catch {
+    return undefined;
+  }
+}
 function activeTools(pi) {
   if (typeof pi?.getActiveTools !== "function" || typeof pi?.getAllTools !== "function") throw new Error("Pi tool access is unavailable");
   const names = new Set(pi.getActiveTools());
@@ -108,51 +114,28 @@ function hookResult(decision) {
 export function readableSummary() { throw new Error("Blackmagic compaction uses BLACKMAGIC_COMPACTION_MARKER; readable summaries belong to Pi native compaction"); }
 
 export function createServerCompactionController(pi, options = {}) {
-  if (!pi?.on || !pi?.registerCommand || !pi?.registerEntryRenderer || !pi?.appendEntry) throw new TypeError("A complete Pi ExtensionAPI is required");
+  if (!pi?.on || !pi?.registerCommand) throw new TypeError("A complete Pi ExtensionAPI is required");
   const fetchImpl = options.fetchImpl ?? globalThis.fetch;
   const telemetry = typeof options.telemetry === "function" ? options.telemetry : () => {};
   const emit = (type, data = {}) => { try { telemetry(safeTelemetry(type, data)); } catch {} };
-  const methodFor = (ctx) => projectCompactionMethod(ctx?.sessionManager?.getBranch?.());
-  const routeFor = (ctx) => describeRemoteRoute(modelIdentity(ctx));
-  const appendedCompactions = new Set();
-  let continuationState = SUMMARY_STAYS_READABLE;
 
   const setState = (ctx, state) => {
-    continuationState = state;
-    if (typeof ctx?.ui?.setStatus === "function") ctx.ui.setStatus(FOOTER_STATUS_KEY, state === PROVIDER_MISMATCH ? PROVIDER_MISMATCH_WARNING : undefined);
+    if (typeof ctx?.ui?.setStatus === "function") ctx.ui.setStatus(FOOTER_STATUS_KEY, continuationFooter(state));
     return state;
   };
-  const coarseState = async (ctx) => {
+  const coarseState = async (ctx, selectedIdentity) => {
     const status = activeCheckpointStatus(ctx?.sessionManager?.getBranch?.());
     if (status.kind === "none" || status.kind === "readable") return setState(ctx, classifyContinuation());
     if (status.kind === "invalid") return setState(ctx, classifyContinuation({ opaqueHistory: true, routeMatches: false, replay: CONTINUATION_REPLAY.FAILED }));
     const checkpoint = status.checkpoint;
-    let auth;
-    try { auth = ctx?.model && typeof ctx?.modelRegistry?.getApiKeyAndHeaders === "function" ? await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model) : undefined; } catch {}
-    const identity = modelIdentity(ctx, auth);
+    const identity = selectedIdentity ?? modelIdentity(ctx, await resolveAuth(ctx));
     return setState(ctx, classifyContinuation({ opaqueHistory: true, routeMatches: identityMatches(checkpoint.details, identity) }));
   };
 
-  pi.registerEntryRenderer(COMPACTION_TIMELINE_ENTRY_TYPE, (entry, _options, theme) => {
-    const label = compactionTimelineLabel(entry.data);
-    if (!label) return undefined;
-    const box = new Box(1, 1, (text) => theme.bg("customMessageBg", text));
-    box.addChild(new Text(theme.fg("accent", label), 0, 0));
-    return box;
-  });
-  for (const eventName of ["session_start", "model_select", "session_tree"]) pi.on(eventName, (_event, ctx) => coarseState(ctx));
-  pi.on("session_compact", async (event, ctx) => {
-    const data = event?.fromExtension && compactionTimelineData(event.compactionEntry);
-    const id = event?.compactionEntry?.id;
-    if (data && id && !appendedCompactions.has(id)) {
-      appendedCompactions.add(id);
-      pi.appendEntry(COMPACTION_TIMELINE_ENTRY_TYPE, data);
-    }
-    await coarseState(ctx);
-  });
+  for (const eventName of ["session_start", "model_select", "session_tree", "session_compact"]) pi.on(eventName, (_event, ctx) => coarseState(ctx));
+  pi.on("session_shutdown", (_event, ctx) => setState(ctx, SUMMARY_STAYS_READABLE));
   pi.on("before_provider_request", async (event, ctx) => {
-    let auth;
-    try { auth = ctx?.model && typeof ctx?.modelRegistry?.getApiKeyAndHeaders === "function" ? await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model) : undefined; } catch {}
+    const auth = await resolveAuth(ctx);
     const identity = modelIdentity(ctx, auth);
     const status = activeCheckpointStatus(ctx?.sessionManager?.getBranch?.());
     if (status.kind === "none" || status.kind === "readable") {
@@ -177,8 +160,7 @@ export function createServerCompactionController(pi, options = {}) {
     return event.payload;
   });
   pi.on("session_before_compact", async (event, ctx) => {
-    let auth;
-    try { auth = ctx?.model && typeof ctx?.modelRegistry?.getApiKeyAndHeaders === "function" ? await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model) : undefined; } catch {}
+    const auth = await resolveAuth(ctx);
     const identity = modelIdentity(ctx, auth);
     const initial = decideCompaction({ routeSupported: identity.kind === "supported", authorized: auth?.ok === true && Boolean(auth.apiKey) });
     if (initial.kind === COMPACTION_DECISION.DELEGATE) return hookResult(initial);
@@ -217,24 +199,25 @@ export function createServerCompactionController(pi, options = {}) {
     emit("remote_applied", { identity, ...result.details, checkpoint: result.details.checkpoint });
     return hookResult(decideCompaction({ routeSupported: true, authorized: true, outcome: COMPACTION_OUTCOME.SUCCEEDED, compaction }));
   });
-  pi.registerCommand("server-compact", {
-    description: "Show focused server-compaction status or help; it never changes thresholds.",
+  pi.registerCommand("blackmagic", {
+    description: "Show Blackmagic compaction status or help.",
     getArgumentCompletions(prefix) {
-      const items = ["status", "help"].filter((x) => x.startsWith(prefix.trim())).map((value) => ({ value, label: value, description: value === "status" ? "Safe current capability status" : "Command usage" }));
+      const items = ["status", "help"].filter((x) => x.startsWith(prefix.trim())).map((value) => ({ value, label: value, description: value === "status" ? "Show current compaction status" : "Show command usage" }));
       return items.length ? items : null;
     },
     handler: async (args, ctx) => {
       const action = args.trim() || "status";
-      const method = methodFor(ctx);
-      const route = routeFor(ctx);
-      const text = action === "help" ? "Usage: /server-compact [status|help]. It has no agent tool and never owns thresholds." : action === "status" ? [
-        `Active branch: ${method}`,
-        `Continuation state: ${continuationState}`,
-        `Next /compact: ${route ? "Blackmagic remote compaction when authorization permits it" : "Pi native compaction — current surface is unsupported"}`,
-        ...(route ? [`Route/protocol: ${route}`] : []),
-        "Supported-route failure: compaction cancels without changing History.",
-        "Privacy: no prompts, tools, credentials, endpoints, deployments, opaque artifacts, hashes, or item counts.",
-      ].join("\n") : "Usage: /server-compact [status|help]";
+      let text;
+      if (action === "help") {
+        text = "Usage: /blackmagic [status|help]\nUse /compact to compact History. /blackmagic only reports current state.";
+      } else if (action === "status") {
+        const auth = await resolveAuth(ctx);
+        const identity = modelIdentity(ctx, auth);
+        const state = await coarseState(ctx, identity);
+        text = projectBlackmagicStatus({ state, serverCompactionAvailable: identity.kind === "supported" && auth?.ok === true && Boolean(auth.apiKey) });
+      } else {
+        text = "Usage: /blackmagic [status|help]";
+      }
       if (ctx?.hasUI && typeof ctx.ui?.notify === "function") ctx.ui.notify(text, action === "status" || action === "help" ? "info" : "warning");
     },
   });

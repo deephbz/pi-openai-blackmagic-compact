@@ -25,10 +25,10 @@ Start Pi as usual, then use `/compact` as usual. Blackmagic has no setup command
 Use this command when you want a short current-state report:
 
 ```text
-/server-compact status
+/blackmagic status
 ```
 
-It sends a transient notification. It does not create a sticky display state.
+It reports only what the user needs: whether History is readable, available, or unavailable, and what `/compact` will do next. It sends a transient notification.
 
 ## Supported surfaces
 
@@ -42,19 +42,27 @@ It does not claim general provider support. Other models and unsupported conditi
 
 ## What you see
 
-After a successful Blackmagic compaction, Pi adds one durable TUI timeline card beside the compaction record:
+Blackmagic uses Pi's one built-in compaction entry. It does not add a second timeline card:
 
 ```text
-[server compaction] OpenAI/Azure Responses v1 applied
+[compaction]
+
+Compacted from 52,161 tokens (ctrl+o to expand)
 ```
 
-It stores only a small redacted display result. It does not enter LLM context, so it does not change replay, serializer input, or compaction selection. A failure does not create a fallback card or Session warning.
+Pi 0.83 does not expose a public extension API for changing that collapsed component. Blackmagic does not patch Pi's private TUI code. When you expand the entry, its summary says:
+
+```text
+Server-side compaction applied. Keep this model and provider to use the compacted History.
+```
+
+After success, the footer shows `Blackmagic active · keep this model and provider`. If the selection stops matching, it shows `Blackmagic History unavailable · switch back or use /tree`. These footer projections are human-only and clear when their state ends.
 
 ## How it works
 
 During `session_before_compact`, Blackmagic derives the authoritative current branch with Pi's canonical conversion and native serializer. It uses that result for an approved server compaction attempt before Pi's native summary.
 
-On success, the package returns one Pi `CompactionEntry` with the fixed `BLACKMAGIC_COMPACTION_MARKER`, validated opaque provider details, and replay lineage. Pi owns and persists the atomic Session mutation. Later requests replay that checkpoint only when the active branch and approved provider identity match. The package also reads the legacy `hc-openai-server-compaction/3` checkpoint namespace for old records. The timeline card follows `session_compact` as a separate TUI-only custom entry.
+On success, the package returns one Pi `CompactionEntry` with the fixed `BLACKMAGIC_COMPACTION_MARKER`, validated opaque provider details, and replay lineage. Pi owns and persists the atomic Session mutation. Later requests replay that checkpoint only when the active branch and approved provider identity match. The package also reads the legacy `hc-openai-server-compaction/3` checkpoint namespace for old records. It does not append a second Session entry.
 
 A provider mismatch is derived state. Blackmagic shows one footer warning while `PROVIDER_MISMATCH` holds, clears it on state exit, and never restricts actions, intercepts input, appends a warning Session entry, or persists warning history. Normal requests continue with their unchanged payload when replay is unavailable.
 
@@ -64,7 +72,7 @@ This boundary is deliberate: Pi owns the conversation record. Blackmagic adds a 
 
 Pi's native summary remains available for unsupported or unauthorized Routes. A replay mismatch is warning-only: Blackmagic leaves the visible payload and all Pi actions available, while a later compaction can use visible History and establish a new checkpoint.
 
-Session data can contain opaque provider artifacts. Treat the session file as sensitive history. The visible timeline entry is redacted: it does not persist or render prompts, tools, credentials, endpoints, deployments, models, opaque artifacts, hashes, usage data, or identity objects.
+Session data can contain opaque provider artifacts, route identity, replay hashes, and provider usage. Treat the session file as sensitive History. The footer and `/blackmagic status` project only current user meaning; they do not display those machine records.
 
 ## Limits
 
@@ -78,4 +86,4 @@ npm run verify:package
 npm run pack:check
 ```
 
-The working-tree suite checks provider contracts, direct current-branch serialization, remote-first ownership, replay and restart boundaries, mismatch freedom, timeline persistence, redaction, generated output, package contents, and RPC loading.
+The working-tree suite checks provider contracts, direct current-branch serialization, remote-first ownership, replay and restart boundaries, mismatch freedom, one native compaction entry, footer cleanup, user-facing status, generated output, package contents, and RPC loading.

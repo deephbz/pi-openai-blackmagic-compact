@@ -147,10 +147,10 @@ test("invalid active Blackmagic records stay PROVIDER_MISMATCH and never interce
     const statuses = [];
     const ctx = { ...controllerContext([{ id: `remote-${label}`, type: "compaction", details }]), ui: { setStatus: (...args) => statuses.push(args) } };
     await pi.handlers.get("session_start")({}, ctx);
-    if (label !== "exact replay-segment failure") assert.match(statuses.at(-1)[1], /cannot replay/, label);
+    if (label !== "exact replay-segment failure") assert.match(statuses.at(-1)[1], /History unavailable/, label);
     const payload = { ...original, input: [{ role: "user", content: "different visible payload" }] };
     assert.deepEqual(await pi.handlers.get("before_provider_request")({ payload }, ctx), payload, label);
-    assert.match(statuses.at(-1)[1], /cannot replay/, label);
+    assert.match(statuses.at(-1)[1], /History unavailable/, label);
   }
   const clearCases = [[], [{ type: "compaction", summary: "readable native summary" }], [{ type: "compaction", details: { schemaVersion: 1, state: "local_fallback", failureClass: "remote_error" } }]];
   for (const branch of clearCases) {
