@@ -1,8 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { SessionManager } from "@earendil-works/pi-coding-agent";
+import { convertToLlm, SessionManager } from "@earendil-works/pi-coding-agent";
 import { captureNativeBody, createServerCompactionController, serializationOptions } from "../src/controller.mjs";
-import { BLACKMAGIC_COMPACTION_MARKER } from "../src/state-machine.mjs";
+import { BLACKMAGIC_APPLIED_NOTICE, BLACKMAGIC_MODEL_SUMMARY } from "../src/state-machine.mjs";
 
 const usage = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
 const model = { provider: "openai", id: "gpt-5", name: "gpt-5", baseUrl: "https://api.openai.com/v1", api: "openai-responses", input: ["text"], reasoning: true, thinkingLevelMap: { high: "high" }, contextWindow: 128000, maxTokens: 8192, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
@@ -37,7 +37,7 @@ test("direct compaction serializes canonical current-branch messages on its firs
   ];
   const { result, request, remoteCalls, summaryCalls } = await compactCurrentBranch(entries);
   assert.equal(result.compaction.details.state, "remote_applied", JSON.stringify(result));
-  assert.equal(result.compaction.summary, BLACKMAGIC_COMPACTION_MARKER);
+  assert.equal(result.compaction.summary, BLACKMAGIC_MODEL_SUMMARY);
   assert.equal(result.compaction.details.checkpoint.artifact.length, 1);
   assert.equal(remoteCalls, 1);
   assert.equal(summaryCalls, 0);
@@ -78,13 +78,30 @@ test("native serialization probe carries reasoning and session identity without 
   assert.equal(serializationOptions({ thinkingLevel: "off", sessionManager: { getSessionId: () => "session-1" } }, auth).reasoning, undefined);
 });
 
-test("successful remote compaction uses only Pi's native compaction entry", async () => {
+test("successful remote compaction uses one native entry and a human-only acknowledgement", async () => {
   const { result, pi, ctx } = await compactCurrentBranch([]);
-  assert.match(result.compaction.summary, /Server-side compaction applied/);
+  const notices = [];
+  ctx.mode = "tui";
+  ctx.ui = { setStatus() {}, notify: (...args) => notices.push(args) };
+  assert.equal(result.compaction.summary, "", "human advice must not enter Pi's model-facing summary");
   assert.equal(result.compaction.details.state, "remote_applied");
   assert.equal(pi.renderers.size, 0, "the extension must not add a second compaction renderer");
   await pi.handlers.get("session_compact")({ compactionEntry: { id: "compact-1", type: "compaction", ...result.compaction }, fromExtension: true }, ctx);
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.deepEqual(notices.at(-1), [BLACKMAGIC_APPLIED_NOTICE, "info"]);
   assert.deepEqual(pi.appended, [], "the extension must not append a second transcript entry");
+});
+
+test("human compaction advice never enters the persisted summary or matching provider request", async () => {
+  const current = await compactCurrentBranch([{ role: "user", content: [{ type: "text", text: "old branch" }], timestamp: 1 }]);
+  current.session.appendCompaction(current.result.compaction.summary, current.result.compaction.firstKeptEntryId, current.result.compaction.tokensBefore, current.result.compaction.details, true);
+  const modelMessages = current.session.buildSessionContext().messages;
+  assert.doesNotMatch(JSON.stringify(modelMessages), /Server-side compaction applied|Keep this model and provider/);
+  assert.doesNotMatch(JSON.stringify(current.result.compaction.details), /Server-side compaction applied|Keep this model and provider/);
+  const payload = await captureNativeBody(model, { systemPrompt: "direct system prompt", messages: convertToLlm(modelMessages), tools: [tool] }, serializationOptions(current.ctx, auth));
+  const replayed = await current.pi.handlers.get("before_provider_request")({ payload }, current.ctx);
+  assert.match(JSON.stringify(replayed.input), /"encrypted_content":"opaque"/);
+  assert.doesNotMatch(JSON.stringify(replayed), /Server-side compaction applied|Keep this model and provider/);
 });
 
 test("supported serialization, remote, and post-segment failures cancel without Session mutation", async () => {
@@ -127,7 +144,7 @@ test("mismatch compaction uses visible History and establishes a new ready check
   assert.match(statuses.at(-1)[1], /History unavailable/);
   const result = await pi.handlers.get("session_before_compact")({ preparation: preparation(branchEntries[0].id), branchEntries, signal: new AbortController().signal }, ctx);
   assert.equal(result.compaction.details.identity.model, "gpt-5.1");
-  assert.equal(result.compaction.summary, BLACKMAGIC_COMPACTION_MARKER);
+  assert.equal(result.compaction.summary, BLACKMAGIC_MODEL_SUMMARY);
   assert.doesNotMatch(JSON.stringify(request), /\"encrypted_content\":\"opaque\"/);
   assert.match(JSON.stringify(request), /new visible work/);
   assert.match(statuses.at(-1)[1], /History unavailable/, "uncommitted handler results must not change footer state");
@@ -138,7 +155,7 @@ test("mismatch compaction uses visible History and establishes a new ready check
 
 test("state hooks project ready and mismatch footers without intercepting input", async () => {
   const first = await compactCurrentBranch([{ role: "user", content: [{ type: "text", text: "old" }], timestamp: 1 }]);
-  let branch = [{ id: "remote", type: "compaction", summary: BLACKMAGIC_COMPACTION_MARKER, details: first.result.compaction.details }];
+  let branch = [{ id: "remote", type: "compaction", summary: BLACKMAGIC_MODEL_SUMMARY, details: first.result.compaction.details }];
   const pi = fakePi();
   createServerCompactionController(pi);
   const statuses = [];
@@ -159,7 +176,7 @@ test("state hooks project ready and mismatch footers without intercepting input"
   assert.equal(statuses.at(-1)[1], undefined);
   await pi.handlers.get("session_start")({}, mismatch);
   assert.equal(statuses.at(-1)[1], undefined);
-  branch = [{ id: "remote", type: "compaction", summary: BLACKMAGIC_COMPACTION_MARKER, details: first.result.compaction.details }];
+  branch = [{ id: "remote", type: "compaction", summary: BLACKMAGIC_MODEL_SUMMARY, details: first.result.compaction.details }];
   await pi.handlers.get("model_select")({}, matching);
   assert.match(statuses.at(-1)[1], /keep this model and provider/);
   await pi.handlers.get("session_shutdown")({}, matching);

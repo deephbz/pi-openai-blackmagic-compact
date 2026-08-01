@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { compactCodex, compactResponses } from "../src/adapters.mjs";
 import { checkpointDetails, safeTelemetry, sha256 } from "../src/contract.mjs";
 import { createServerCompactionController } from "../src/controller.mjs";
+import { LEGACY_BLACKMAGIC_MODEL_SUMMARIES } from "../src/state-machine.mjs";
 
 function codexToken() {
   const payload = Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "acct-test" } })).toString("base64url");
@@ -125,6 +126,32 @@ test("public request hook replays only its named checkpoint into provider payloa
   assert.equal(JSON.stringify(replayed.input).includes("local summary"), false);
   assert.equal(JSON.stringify(replayed.input).includes("new work"), true);
   assert.deepEqual(original.input[0].role, "user", "request hook returns a replacement rather than mutating caller payload");
+});
+
+test("legacy Blackmagic UI placeholders never enter mismatched model context or payloads", async () => {
+  const summary = LEGACY_BLACKMAGIC_MODEL_SUMMARIES.at(-1);
+  const wrapped = `The conversation history before this point was compacted into the following summary:\n\n<summary>\n${summary}\n</summary>`;
+  const summaryInput = { role: "user", content: [{ type: "input_text", text: wrapped }] };
+  const identity = { surface: "openai_api", protocol: "responses_compact_v1", endpoint: "https://api.openai.com/v1", model: "gpt-5", api: "openai-responses" };
+  const details = checkpointDetails({ identity, opaqueWindow: [{ type: "compaction", encrypted_content: "opaque" }] });
+  details.replay = { namespace: "pi-openai-blackmagic-compact/1", replacedItemHashes: [sha256(summaryInput)] };
+  const branch = [{ id: "remote-compact", type: "compaction", summary, details }];
+  const pi = fakePi();
+  createServerCompactionController(pi);
+  const mismatch = { ...controllerContext(branch), model: { ...controllerContext().model, id: "gpt-5.1" } };
+  const visible = { role: "user", content: [{ type: "text", text: "visible work" }] };
+  const projected = await pi.handlers.get("context")({ messages: [{ role: "compactionSummary", summary, tokensBefore: 10 }, visible] }, mismatch);
+  assert.deepEqual(projected.messages, [visible]);
+  const payload = { model: "gpt-5.1", input: [summaryInput, { role: "user", content: "visible work" }] };
+  const sanitized = await pi.handlers.get("before_provider_request")({ payload }, mismatch);
+  assert.doesNotMatch(JSON.stringify(sanitized), /Server-side compaction applied|Keep this model and provider/);
+  assert.match(JSON.stringify(sanitized), /visible work/);
+
+  const readableBranch = [{ ...branch[0], summary: "readable legacy summary" }];
+  const readablePi = fakePi();
+  createServerCompactionController(readablePi);
+  const readableCtx = { ...mismatch, sessionManager: { ...mismatch.sessionManager, getBranch: () => readableBranch } };
+  assert.equal(await readablePi.handlers.get("context")({ messages: [{ role: "compactionSummary", summary: "readable legacy summary" }, visible] }, readableCtx), undefined);
 });
 
 test("invalid active Blackmagic records stay PROVIDER_MISMATCH and never intercept payloads", async () => {

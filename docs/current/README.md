@@ -34,9 +34,9 @@ authorization before it does compaction work.
 - A supported and authorized Route runs Blackmagic first. It serializes the
   current branch through Pi's canonical path, applies a matching checkpoint
   when one exists, and calls the approved remote protocol. On success, it
-  returns one Pi `CompactionEntry` with the fixed
-  `BLACKMAGIC_COMPACTION_MARKER`, validated opaque details, and replay lineage.
-  Pi then persists that result, and its native readable summary is skipped.
+  returns one Pi `CompactionEntry` with an empty model-facing summary,
+  validated opaque details, and replay lineage. Pi then persists that result,
+  and its native readable summary is skipped.
 - An unsupported or unauthorized Route returns `undefined` to Pi. Pi performs
   exactly one native readable summary, and Blackmagic makes no remote call.
 - A supported serialization, remote, or post-segment failure returns
@@ -51,7 +51,8 @@ this document does not duplicate its machine table.
 The controller recomputes coarse state on `session_start`, `model_select`,
 `session_tree`, and `session_compact`. It refines that state from actual replay
 success or failure in `before_provider_request`, and it clears its footer on
-`session_shutdown`.
+`session_shutdown`. A successful extension compaction also schedules one
+human-only TUI acknowledgement after Pi rebuilds the transcript.
 
 `SUMMARY_STAYS_READABLE` means Pi has readable History. `BLACKMAGIC_READY`
 means opaque History matches the selected Route, so the footer tells the user
@@ -60,31 +61,36 @@ cannot replay on the selected Route, so the footer tells the user to switch
 back or use `/tree`. These are derived states only. They never restrict actions,
 intercept input, append a warning Session entry, prompt, confirm, cancel user
 sends, register input handling, or inject warning context. When replay is
-unavailable, the visible provider payload is unchanged. A mismatch compaction
-may proceed from visible History and establish a new matching checkpoint.
+unavailable, recent visible History stays unchanged. The controller removes
+only its exact empty or known legacy replay placeholder, so human UI advice
+cannot enter model context. A mismatch compaction may proceed from visible
+History and establish a new matching checkpoint.
 
 ## Persistence and compatibility
 
 Pi owns the conversation record and Session mutation. A successful remote
 operation stores one opaque provider artifact in typed `CompactionEntry.details`
-and a fixed marker in the readable compaction summary. Blackmagic uses Pi's one
+and leaves Pi's model-facing compaction summary empty. Blackmagic uses Pi's one
 built-in compaction entry and does not append a second timeline entry. Pi 0.83
-does not expose a public extension API for changing the collapsed built-in
-compaction component, so Blackmagic does not patch private Pi TUI code. The
-package reads both the current replay namespace and legacy
-`hc-openai-server-compaction/3` records.
+does not expose a public extension API for changing the built-in compaction
+component, so Blackmagic does not patch private Pi TUI code. A transient
+acknowledgement and the persistent footer carry human advice without entering
+the Session record or model context. The package reads both the current replay
+namespace and legacy `hc-openai-server-compaction/3` records.
 
 The opaque artifact stays usable only when its active branch, provider identity,
 and replay segment match. A mismatch does not deny transport or ordinary user
-actions. Pi's native summary remains the fallback for unsupported or
-unauthorized Routes, not for a supported remote failure: supported failure
-leaves History unchanged.
+actions. Exact Blackmagic placeholders are removed when they cannot replay;
+older readable hybrid summaries are not placeholders and remain available.
+Pi's native summary remains the fallback for unsupported or unauthorized
+Routes, not for a supported remote failure: supported failure leaves History
+unchanged.
 
 ## Evidence
 
 Focused tests cover all three protocol adapters, canonical current-branch
 serialization, zero native-summary calls on remote success, one remote call,
-one marker entry, one opaque artifact, unsupported and unauthorized delegation,
+one empty-summary entry, one opaque artifact, unsupported and unauthorized delegation,
 supported failure cancellation without Session mutation, replay and restart
 boundaries, mismatch freedom, ready/mismatch footer behavior, one native
 compaction entry, legacy records, human-facing status redaction, generated

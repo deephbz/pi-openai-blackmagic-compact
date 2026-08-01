@@ -2,7 +2,7 @@ import { buildSessionContext, convertToLlm } from "@earendil-works/pi-coding-age
 import { azureOpenAIResponsesApi, openAICodexResponsesApi, openAIResponsesApi } from "@earendil-works/pi-ai/compat";
 import { compactCodex, compactResponses } from "./adapters.mjs";
 import { identifySurface, identityMatches, latestActiveCompaction, replaceOneHashSegment, safeTelemetry, sha256 } from "./contract.mjs";
-import { BLACKMAGIC_COMPACTION_MARKER, COMPACTION_DECISION, COMPACTION_OUTCOME, CONTINUATION_REPLAY, SUMMARY_STAYS_READABLE, classifyContinuation, continuationFooter, decideCompaction, projectBlackmagicStatus } from "./state-machine.mjs";
+import { BLACKMAGIC_APPLIED_NOTICE, BLACKMAGIC_MODEL_SUMMARY, COMPACTION_DECISION, COMPACTION_OUTCOME, CONTINUATION_REPLAY, SUMMARY_STAYS_READABLE, classifyContinuation, continuationFooter, decideCompaction, isBlackmagicModelPlaceholder, projectBlackmagicStatus } from "./state-machine.mjs";
 
 const DELEGATES = Object.freeze({
   "openai-responses": openAIResponsesApi().streamSimple,
@@ -56,6 +56,29 @@ function rewriteReplay(payload, checkpoint, identity) {
   if (!payload || !identityMatches(checkpoint.details, identity) || ![REPLAY_NAMESPACE, LEGACY_REPLAY_NAMESPACE].includes(replay?.namespace)) return undefined;
   const next = replaceOneHashSegment(payload.input, replay.replacedItemHashes, checkpoint.details.checkpoint?.artifact);
   return next ? { ...payload, input: next } : undefined;
+}
+function compactionSummaryText(summary) {
+  const [message] = convertToLlm([{ role: "compactionSummary", summary, tokensBefore: 0, timestamp: 0 }]);
+  const [content] = Array.isArray(message?.content) ? message.content : [];
+  return content?.type === "text" ? content.text : undefined;
+}
+function exactText(item) {
+  if (typeof item?.content === "string") return item.content;
+  if (!Array.isArray(item?.content) || item.content.length !== 1) return undefined;
+  const [content] = item.content;
+  return (content?.type === "text" || content?.type === "input_text") && typeof content.text === "string" ? content.text : undefined;
+}
+function removeModelPlaceholder(payload, summary) {
+  if (!payload || !isBlackmagicModelPlaceholder(summary)) return payload;
+  const expected = compactionSummaryText(summary);
+  if (!expected) return payload;
+  for (const field of ["input", "messages"]) {
+    const items = payload[field];
+    if (!Array.isArray(items)) continue;
+    const index = items.findIndex((item) => item?.role === "user" && exactText(item) === expected);
+    if (index >= 0) return { ...payload, [field]: [...items.slice(0, index), ...items.slice(index + 1)] };
+  }
+  return payload;
 }
 async function resolveAuth(ctx) {
   try {
@@ -111,13 +134,27 @@ function hookResult(decision) {
   if (decision.kind === COMPACTION_DECISION.APPLY) return { compaction: decision.compaction };
   throw new TypeError(`cannot render pending compaction decision: ${decision.kind}`);
 }
-export function readableSummary() { throw new Error("Blackmagic compaction uses BLACKMAGIC_COMPACTION_MARKER; readable summaries belong to Pi native compaction"); }
+export function readableSummary() { throw new Error("Blackmagic opaque History has no readable summary; readable summaries belong to Pi native compaction"); }
 
 export function createServerCompactionController(pi, options = {}) {
   if (!pi?.on || !pi?.registerCommand) throw new TypeError("A complete Pi ExtensionAPI is required");
   const fetchImpl = options.fetchImpl ?? globalThis.fetch;
   const telemetry = typeof options.telemetry === "function" ? options.telemetry : () => {};
   const emit = (type, data = {}) => { try { telemetry(safeTelemetry(type, data)); } catch {} };
+  const scheduledNotices = new Set();
+  const scheduleAppliedNotice = (ctx) => {
+    const ui = ctx?.ui;
+    if (ctx?.mode !== "tui" || typeof ui?.notify !== "function") return;
+    const timer = setTimeout(() => {
+      scheduledNotices.delete(timer);
+      ui.notify(BLACKMAGIC_APPLIED_NOTICE, "info");
+    }, 0);
+    scheduledNotices.add(timer);
+  };
+  const clearScheduledNotices = () => {
+    for (const timer of scheduledNotices) clearTimeout(timer);
+    scheduledNotices.clear();
+  };
 
   const setState = (ctx, state) => {
     if (typeof ctx?.ui?.setStatus === "function") ctx.ui.setStatus(FOOTER_STATUS_KEY, continuationFooter(state));
@@ -132,8 +169,27 @@ export function createServerCompactionController(pi, options = {}) {
     return setState(ctx, classifyContinuation({ opaqueHistory: true, routeMatches: identityMatches(checkpoint.details, identity) }));
   };
 
-  for (const eventName of ["session_start", "model_select", "session_tree", "session_compact"]) pi.on(eventName, (_event, ctx) => coarseState(ctx));
-  pi.on("session_shutdown", (_event, ctx) => setState(ctx, SUMMARY_STAYS_READABLE));
+  for (const eventName of ["session_start", "model_select", "session_tree"]) pi.on(eventName, (_event, ctx) => coarseState(ctx));
+  pi.on("session_compact", async (event, ctx) => {
+    const state = await coarseState(ctx);
+    if (event.fromExtension && event.compactionEntry?.details?.state === "remote_applied") scheduleAppliedNotice(ctx);
+    return state;
+  });
+  pi.on("session_shutdown", (_event, ctx) => {
+    clearScheduledNotices();
+    return setState(ctx, SUMMARY_STAYS_READABLE);
+  });
+  pi.on("context", async (event, ctx) => {
+    const status = activeCheckpointStatus(ctx?.sessionManager?.getBranch?.());
+    if (status.kind === "none" || status.kind === "readable") return;
+    const entry = status.kind === "valid" ? status.checkpoint.entry : status.entry;
+    if (!isBlackmagicModelPlaceholder(entry?.summary)) return;
+    if (status.kind === "valid") {
+      const identity = modelIdentity(ctx, await resolveAuth(ctx));
+      if (identityMatches(status.checkpoint.details, identity)) return;
+    }
+    return { messages: event.messages.filter((message) => !(message?.role === "compactionSummary" && message.summary === entry.summary)) };
+  });
   pi.on("before_provider_request", async (event, ctx) => {
     const auth = await resolveAuth(ctx);
     const identity = modelIdentity(ctx, auth);
@@ -146,7 +202,7 @@ export function createServerCompactionController(pi, options = {}) {
     if (status.kind === "invalid") {
       setState(ctx, classifyContinuation({ opaqueHistory: true, routeMatches: false, replay: CONTINUATION_REPLAY.FAILED }));
       emit("remote_invalidated", { identity, failureClass: "invalid_checkpoint" });
-      return event.payload;
+      return removeModelPlaceholder(event.payload, status.entry?.summary);
     }
     const checkpoint = status.checkpoint;
     const replayed = rewriteReplay(event.payload, checkpoint, identity);
@@ -157,7 +213,7 @@ export function createServerCompactionController(pi, options = {}) {
     }
     setState(ctx, classifyContinuation({ opaqueHistory: true, routeMatches: identityMatches(checkpoint.details, identity), replay: CONTINUATION_REPLAY.FAILED }));
     emit("remote_invalidated", { identity, failureClass: identityMatches(checkpoint.details, identity) ? "replay_segment_mismatch" : "identity_mismatch" });
-    return event.payload;
+    return removeModelPlaceholder(event.payload, checkpoint.entry?.summary);
   });
   pi.on("session_before_compact", async (event, ctx) => {
     const auth = await resolveAuth(ctx);
@@ -185,7 +241,7 @@ export function createServerCompactionController(pi, options = {}) {
       id: "pi-openai-blackmagic-compact-pending",
       parentId: ctx.sessionManager?.getLeafId?.() ?? "",
       timestamp: Date.now(),
-      summary: BLACKMAGIC_COMPACTION_MARKER,
+      summary: BLACKMAGIC_MODEL_SUMMARY,
       firstKeptEntryId: event.preparation.firstKeptEntryId,
       tokensBefore: event.preparation.tokensBefore,
     };
@@ -195,7 +251,7 @@ export function createServerCompactionController(pi, options = {}) {
 
     result.details.lineage = { firstKeptEntryId: event.preparation.firstKeptEntryId, leafId: ctx.sessionManager?.getLeafId?.() };
     result.details.replay = { namespace: REPLAY_NAMESPACE, replacedItemHashes: postSegment.map((item) => sha256(item)) };
-    const compaction = { summary: BLACKMAGIC_COMPACTION_MARKER, firstKeptEntryId: event.preparation.firstKeptEntryId, tokensBefore: event.preparation.tokensBefore, details: result.details };
+    const compaction = { summary: BLACKMAGIC_MODEL_SUMMARY, firstKeptEntryId: event.preparation.firstKeptEntryId, tokensBefore: event.preparation.tokensBefore, details: result.details };
     emit("remote_applied", { identity, ...result.details, checkpoint: result.details.checkpoint });
     return hookResult(decideCompaction({ routeSupported: true, authorized: true, outcome: COMPACTION_OUTCOME.SUCCEEDED, compaction }));
   });

@@ -3,7 +3,14 @@
 export const SUMMARY_STAYS_READABLE = "SUMMARY_STAYS_READABLE";
 export const BLACKMAGIC_READY = "BLACKMAGIC_READY";
 export const PROVIDER_MISMATCH = "PROVIDER_MISMATCH";
-export const BLACKMAGIC_COMPACTION_MARKER = "Server-side compaction applied. Keep this model and provider to use the compacted History.";
+/** Pi requires a summary string, but Blackmagic History lives in the opaque checkpoint. */
+export const BLACKMAGIC_MODEL_SUMMARY = "";
+export const LEGACY_BLACKMAGIC_MODEL_SUMMARIES = Object.freeze([
+  "[Blackmagic compaction checkpoint — opaque History requires its matching OpenAI Route]",
+  "Server-side compaction applied. Keep this model and provider to use the compacted History.",
+]);
+/** Human-only acknowledgement. It must never enter model context or Session summary text. */
+export const BLACKMAGIC_APPLIED_NOTICE = "Server-side compaction applied. Keep this model and provider.";
 export const BLACKMAGIC_READY_NOTICE = "Blackmagic active · keep this model and provider";
 export const PROVIDER_MISMATCH_WARNING = "Blackmagic History unavailable · switch back or use /tree";
 
@@ -349,6 +356,11 @@ export const STATE_MACHINE = deepFreeze({
 
 export const STATE_NAMES = Object.freeze([SUMMARY_STAYS_READABLE, BLACKMAGIC_READY, PROVIDER_MISMATCH]);
 export const TRANSITIONS = STATE_MACHINE.transitions;
+
+/** Identify Blackmagic replay placeholders, including records written by older working versions. */
+export function isBlackmagicModelPlaceholder(summary) {
+  return summary === BLACKMAGIC_MODEL_SUMMARY || LEGACY_BLACKMAGIC_MODEL_SUMMARIES.includes(summary);
+}
 
 /** Project one derived continuation state into the human-only footer. */
 export function continuationFooter(state) {
