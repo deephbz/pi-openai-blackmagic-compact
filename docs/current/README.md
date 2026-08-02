@@ -2,108 +2,71 @@
 
 As of: 2026-08-01
 
-Status: unreleased working-tree contract after the published `0.1.0-rc.3`
+Stage: hardening.
 
-Stage: hardening of the narrow direct-compaction contract.
+Status: unreleased source after `0.1.0-rc.3`.
 
-The published `0.1.0-rc.3` is the last release. Its documented path created
-Pi's native readable summary before the remote attempt. The source in this
-working tree changes that path to remote-first. It has no assigned release
-version, so do not treat this working tree as a release.
+## Product boundary
 
-## Authority and boundary
+Blackmagic provides server-side compaction in Pi. Its public interface has four parts:
 
-[`src/state-machine.mjs`](../../src/state-machine.mjs) is the executable
-semantic authority for continuation states, the fixed compaction marker, pure
-replay classification, and pure compaction decisions. The controller consumes
-that module, and tests execute the contract. The interactive state-machine HTML
-is generated output from that module; edit the code authority and run
-`npm run generate:state-machine`, rather than editing the HTML by hand.
+- `/compact` starts compaction through Pi.
+- `/blackmagic` reports status and help.
+- The TUI confirms successful server-side compaction.
+- The footer warns when the selected provider cannot use active Blackmagic History.
 
-This hook-only package compacts the authoritative current Pi branch on official
-OpenAI Responses, official Azure OpenAI Responses, and ChatGPT Codex Responses.
-It preserves Pi's Session authority and adds a narrow opaque provider
-checkpoint. It has no extension configuration, provider wrapper, threshold
-policy, handoff, or normal provider-request ownership.
+Blackmagic does not own thresholds, transport, handoffs, conversation storage, or provider setup. Pi remains the Session authority.
 
-## Compaction ownership
+## Executable authority
 
-At `session_before_compact`, Blackmagic identifies the selected Route and
-authorization before it does compaction work.
+[`src/state-machine.mjs`](../../src/state-machine.mjs) owns the three public states, transitions, footer text, command projection, and classification rule.
 
-- A supported and authorized Route runs Blackmagic first. It serializes the
-  current branch through Pi's canonical path, applies a matching checkpoint
-  when one exists, and calls the approved remote protocol. On success, it
-  returns one Pi `CompactionEntry` with an empty model-facing summary,
-  validated opaque details, and replay lineage. Pi then persists that result,
-  and its native readable summary is skipped.
-- An unsupported or unauthorized Route returns `undefined` to Pi. Pi performs
-  exactly one native readable summary, and Blackmagic makes no remote call.
-- A supported serialization, remote, or post-segment failure returns
-  `{ cancel: true }`. Blackmagic makes no native-summary call and does not
-  change History.
+[`src/controller.mjs`](../../src/controller.mjs) owns Pi event handling. [`src/contract.mjs`](../../src/contract.mjs) owns the private checkpoint shape. [`src/adapters.mjs`](../../src/adapters.mjs) owns provider requests.
 
-The exact state and decision vocabulary remains in the executable authority;
-this document does not duplicate its machine table.
+The [interactive HTML](../design/compaction-state-machine.html) is generated from the state-machine code. Run `npm run generate:state-machine` after a state-machine change. Do not edit the generated HTML.
 
-## Continuation and mismatch
+## Compaction contract
 
-The controller recomputes coarse state on `session_start`, `model_select`,
-`session_tree`, and `session_compact`. It refines that state from actual replay
-success or failure in `before_provider_request`, and it clears its footer on
-`session_shutdown`. A successful extension compaction also schedules one
-human-only TUI acknowledgement after Pi rebuilds the transcript.
+A supported and authorized provider runs server-side compaction before Pi creates a local summary.
 
-`SUMMARY_STAYS_READABLE` means Pi has readable History. `BLACKMAGIC_READY`
-means opaque History matches the selected Route, so the footer tells the user
-to keep the current model and provider. `PROVIDER_MISMATCH` means opaque History
-cannot replay on the selected Route, so the footer tells the user to switch
-back or use `/tree`. These are derived states only. They never restrict actions,
-intercept input, append a warning Session entry, prompt, confirm, cancel user
-sends, register input handling, or inject warning context. When replay is
-unavailable, recent visible History stays unchanged. The controller removes
-only its exact empty or known legacy replay placeholder, so human UI advice
-cannot enter model context. A mismatch compaction may proceed from visible
-History and establish a new matching checkpoint.
+Success returns one Pi `CompactionEntry`. Its model-facing summary is empty. Its private details contain only:
 
-## Persistence and compatibility
+- the provider connection identity;
+- the provider-owned replay input;
+- hashes that locate the one serialized Pi segment to replace.
 
-Pi owns the conversation record and Session mutation. A successful remote
-operation stores one opaque provider artifact in typed `CompactionEntry.details`
-and leaves Pi's model-facing compaction summary empty. Blackmagic uses Pi's one
-built-in compaction entry and does not append a second timeline entry. Pi 0.83
-does not expose a public extension API for changing the built-in compaction
-component, so Blackmagic does not patch private Pi TUI code. A transient
-acknowledgement and the persistent footer carry human advice without entering
-the Session record or model context. The package reads both the current replay
-namespace and legacy `hc-openai-server-compaction/3` records.
+Official OpenAI and Azure output remains unchanged. ChatGPT Codex stores only its returned opaque compaction item. Blackmagic adds no local retention window.
 
-The opaque artifact stays usable only when its active branch, provider identity,
-and replay segment match. A mismatch does not deny transport or ordinary user
-actions. Exact Blackmagic placeholders are removed when they cannot replay;
-older readable hybrid summaries are not placeholders and remain available.
-Pi's native summary remains the fallback for unsupported or unauthorized
-Routes, not for a supported remote failure: supported failure leaves History
-unchanged.
+An unsupported or unauthorized provider delegates to Pi. Pi then creates its normal local summary.
 
-## Evidence
+A supported serialization or server failure cancels the attempt. History stays unchanged.
 
-Focused tests cover all three protocol adapters, canonical current-branch
-serialization, zero native-summary calls on remote success, one remote call,
-one empty-summary entry, one opaque artifact, unsupported and unauthorized delegation,
-supported failure cancellation without Session mutation, replay and restart
-boundaries, mismatch freedom, ready/mismatch footer behavior, one native
-compaction entry, legacy records, human-facing status redaction, generated
-output, package contents, and RPC loading.
+## Continuation contract
 
-Official OpenAI and Azure authenticated canaries remain live-unverified. Pi's
-native compaction remains the dependable path for unsupported or unauthorized
-Routes.
+`SUMMARY_STAYS_READABLE` means History is readable.
+
+`BLACKMAGIC_READY` means the active provider can use the stored server result. Model selection can change within the same provider connection.
+
+`PROVIDER_MISMATCH` means the active provider cannot use the stored result. Blackmagic shows one persistent footer warning. It does not block or confirm any action. It does not inject a warning into History or model input.
+
+The controller recomputes state after Session start, model or provider selection, tree selection, compaction, and restart. It clears its footer on Session shutdown.
+
+A compatible provider replays the stored provider input. A mismatch continues with visible History only. A later compaction can establish a new result for the selected provider.
+
+Blackmagic reads only its current checkpoint shape. Zero backward compatibility is intentional.
+
+## TUI contract
+
+Blackmagic uses Pi's one built-in compaction card. Pi 0.83 has no public extension API to change that card.
+
+A successful extension compaction schedules one human-only TUI notice. The footer and `/blackmagic` are also human-only. None of these texts enters the empty summary or provider payload.
+
+## Evidence and limits
+
+Focused tests cover provider requests, provider-owned outputs, current-branch serialization, one server call, one Pi entry, failure behavior, replay, model changes, provider mismatch, tree recovery, TUI separation, persistence, generated output, package contents, and RPC loading.
+
+An authenticated canary confirmed ChatGPT Codex replay across two other models. This is empirical evidence, not a documented vendor guarantee. Authenticated OpenAI API and Azure canaries remain unavailable.
 
 ## Architecture impact
 
-None. This change keeps Pi as the sole compaction-entry owner and removes a
-redundant Blackmagic transcript projection. The root phase record now reflects
-that implementation detail. Component responsibility, authority, dependency
-direction, data flow, persistence boundary, deployment topology, and the
-Structurizr DSL do not change.
+None. The cleanup reduces the extension's private contract. It does not change component responsibility, authority, dependency direction, data flow, persistence boundary, or deployment topology.

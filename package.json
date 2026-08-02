@@ -21,11 +21,7 @@
   "publishConfig": { "access": "public" },
   "pi": { "extensions": ["./src/extension.mjs"] },
   "exports": {
-    ".": "./src/index.mjs",
-    "./extension": "./src/extension.mjs",
-    "./contract": "./src/contract.mjs",
-    "./controller": "./src/controller.mjs",
-    "./state-machine": "./src/state-machine.mjs"
+    ".": "./src/extension.mjs"
   },
   "files": ["src", "docs/current", "docs/design/compaction-state-machine.html", "docs/design/compaction-state-machine.template.html", "README.md", "scripts/generate-state-machine-html.mjs", "scripts/verify-package.mjs", "LICENSE"]
 }

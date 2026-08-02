@@ -1,216 +1,139 @@
 import http from "node:http";
 import test from "node:test";
 import assert from "node:assert/strict";
-import { compactCodex, compactResponses } from "../src/adapters.mjs";
-import { checkpointDetails, safeTelemetry, sha256 } from "../src/contract.mjs";
+import { compactProvider } from "../src/adapters.mjs";
+import { BLACKMAGIC_DETAILS_TYPE, createCheckpoint, identifySurface, readCheckpoint, sameProvider, sha256 } from "../src/contract.mjs";
 import { createServerCompactionController } from "../src/controller.mjs";
-import { LEGACY_BLACKMAGIC_MODEL_SUMMARIES } from "../src/state-machine.mjs";
 
 function codexToken() {
   const payload = Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "acct-test" } })).toString("base64url");
   return `e30.${payload}.test`;
 }
-const identities = {
-  openai: { surface: "openai_api", protocol: "responses_compact_v1", endpoint: "http://127.0.0.1:1/v1", model: "gpt-5" },
-  azure: { surface: "azure_openai", protocol: "responses_compact_v1", endpoint: "http://127.0.0.1:1/openai/v1", model: "gpt-5", deployment: "private-deployment" },
-  codex: { surface: "chatgpt_codex", protocol: "codex_compaction_trigger_v2", endpoint: "http://127.0.0.1:1/backend-api", model: "gpt-5" },
+
+const providers = {
+  openai: { kind: "supported", surface: "openai_api", endpoint: "http://127.0.0.1:1/v1", model: "gpt-5" },
+  azure: { kind: "supported", surface: "azure_openai", endpoint: "http://127.0.0.1:1/openai/v1", model: "gpt-5", deployment: "private-deployment" },
+  codex: { kind: "supported", surface: "chatgpt_codex", endpoint: "http://127.0.0.1:1/backend-api", model: "gpt-5" },
 };
 const prepared = {
-  instructions: "final system prompt",
-  tools: [{ type: "function", name: "final-tool" }],
-  reasoning: { effort: "high" }, text: { verbosity: "low" }, parallel_tool_calls: true, tool_choice: "auto", store: true, include: ["reasoning.encrypted_content"], prompt_cache_key: "synthetic-cache-key",
-  input: [{ role: "user", content: "old" }, { type: "reasoning", encrypted_content: "opaque-reasoning" }, { role: "assistant", content: "latest" }],
+  payload: {
+    model: "gpt-5",
+    instructions: "system",
+    tools: [{ type: "function", name: "probe" }],
+    reasoning: { effort: "high" },
+    text: { verbosity: "low" },
+    input: [{ role: "user", content: "old" }],
+  },
+  input: [{ role: "user", content: "old" }],
 };
 
-async function loopback(handler) {
+async function loopback(run) {
   let requestError;
-  const server = http.createServer(async (req, res) => {
+  const server = http.createServer(async (request, response) => {
     try {
-      let body = "";
-      for await (const chunk of req) body += chunk;
-      const result = await handler(req, JSON.parse(body));
-      res.writeHead(result.status ?? 200, { "content-type": "application/json" });
-      res.end(JSON.stringify(result.body));
+      let text = "";
+      for await (const chunk of request) text += chunk;
+      const result = await run(request, JSON.parse(text));
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify(result));
     } catch (error) {
       requestError = error;
-      res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify({ output: [{ type: "compaction", encrypted_content: "opaque" }] }));
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ output: [{ type: "compaction", encrypted_content: "opaque" }] }));
     }
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   try {
-    const result = await handler({ url: `http://127.0.0.1:${server.address().port}` }, undefined);
+    const result = await run({ url: `http://127.0.0.1:${server.address().port}` });
     if (requestError) throw requestError;
     return result;
-  } finally { await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())); }
+  } finally {
+    await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  }
 }
 
-for (const [surface, identity] of Object.entries(identities)) test(`${surface} loopback sends resolved auth and the exact protocol request`, async () => {
+for (const [name, provider] of Object.entries(providers)) test(`${name} uses its one server-compaction request`, async () => {
   await loopback(async (request, body) => {
     if (body === undefined) {
-      const remote = { ...identity, endpoint: request.url + (identity.surface === "chatgpt_codex" ? "/backend-api" : identity.surface === "azure_openai" ? "/openai/v1" : "/v1") };
-      const run = remote.surface === "chatgpt_codex" ? compactCodex : compactResponses;
-      const result = await run({ identity: remote, prepared, auth: { apiKey: identity.surface === "chatgpt_codex" ? codexToken() : "synthetic-key", headers: { "x-provider-proof": "present" } }, fetchImpl: fetch });
-      assert.ok(result.details, result.error?.message);
-      return { body: {} };
+      const selected = { ...provider, endpoint: request.url + (provider.surface === "chatgpt_codex" ? "/backend-api" : provider.surface === "azure_openai" ? "/openai/v1" : "/v1") };
+      const result = await compactProvider({ provider: selected, prepared, auth: { apiKey: provider.surface === "chatgpt_codex" ? codexToken() : "synthetic-key", headers: { "x-proof": "present" } }, fetchImpl: fetch });
+      assert.ok(result.input, result.error?.message);
+      return {};
     }
-    if (identity.surface === "azure_openai") assert.equal(request.headers["api-key"], "synthetic-key");
+    assert.equal(request.headers["x-proof"], "present");
+    if (provider.surface === "azure_openai") assert.equal(request.headers["api-key"], "synthetic-key");
     else assert.match(request.headers.authorization, /^Bearer /);
-    if (identity.surface === "chatgpt_codex") assert.equal(request.headers["chatgpt-account-id"], "acct-test");
-    assert.equal(request.headers["x-provider-proof"], "present");
-    assert.equal(request.headers["content-type"], "application/json");
-    assert.equal(request.url, identity.surface === "chatgpt_codex" ? "/backend-api/codex/responses" : "/" + (identity.surface === "azure_openai" ? "openai/v1/" : "v1/") + "responses/compact");
-    assert.deepEqual(body.instructions, prepared.instructions);
-    if (identity.surface === "chatgpt_codex") {
-      assert.deepEqual(body.tools, prepared.tools);
-      for (const field of ["reasoning", "text", "parallel_tool_calls", "tool_choice", "store", "include", "prompt_cache_key"]) assert.deepEqual(body[field], prepared[field]);
-      assert.deepEqual(body.input.slice(0, -1), prepared.input);
+    if (provider.surface === "chatgpt_codex") {
+      assert.equal(request.url, "/backend-api/codex/responses");
+      assert.equal(request.headers["chatgpt-account-id"], "acct-test");
       assert.deepEqual(body.input.at(-1), { type: "compaction_trigger" });
-    } else { assert.deepEqual(body.input, prepared.input); assert.deepEqual(Object.keys(body).sort(), ["input", "instructions", "model", "prompt_cache_key"].sort()); }
-    return { body: { output: [{ type: "compaction", encrypted_content: "opaque" }] } };
+      assert.deepEqual(body.tools, prepared.payload.tools);
+    } else {
+      assert.match(request.url, /responses\/compact$/);
+      assert.deepEqual(body.input, prepared.input);
+      assert.deepEqual(Object.keys(body).sort(), ["input", "instructions", "model"].sort());
+    }
+    return { output: [{ type: "compaction", encrypted_content: "opaque" }] };
   });
 });
 
-test("Codex persists a bounded real-user window plus its one validated compaction item", async () => {
-  const result = await compactCodex({ identity: identities.codex, prepared: { ...prepared, input: [{ role: "user", content: "keep" }, { role: "assistant", content: "discard" }, { role: "user", name: "hc-control", content: "discard" }] }, auth: { apiKey: codexToken() }, fetchImpl: async () => ({ ok: true, json: async () => ({ output: [{ type: "compaction", encrypted_content: "opaque" }] }) }) });
-  assert.deepEqual(result.details.checkpoint.artifact, [{ role: "user", content: "keep" }, { type: "compaction", encrypted_content: "opaque" }]);
-  assert.equal(result.details.checkpoint.retention, "recent_real_user_messages_64000_plus_canonical_provider_window");
-});
-
-test("official compact output persists only returned user items plus its final compaction item", async () => {
-  const user = { type: "message", role: "user", content: [{ type: "input_text", text: "retain" }] };
-  const assistant = { type: "message", role: "assistant", content: [{ type: "output_text", text: "must-not-replay" }] };
+test("the provider owns the replacement window", async () => {
+  const user = { type: "message", role: "user", content: [{ type: "input_text", text: "retained" }] };
+  const assistant = { type: "message", role: "assistant", content: [{ type: "output_text", text: "retained by provider" }] };
   const compaction = { type: "compaction", encrypted_content: "opaque" };
-  const result = await compactResponses({ identity: identities.openai, prepared, auth: { apiKey: "synthetic-key" }, fetchImpl: async () => ({ ok: true, json: async () => ({ output: [user, assistant, compaction] }) }) });
-  assert.deepEqual(result.details.checkpoint.artifact, [user, compaction]);
+  const official = await compactProvider({ provider: providers.openai, prepared, auth: { apiKey: "key" }, fetchImpl: async () => ({ ok: true, json: async () => ({ output: [user, assistant, compaction] }) }) });
+  assert.deepEqual(official.input, [user, assistant, compaction]);
+
+  const codex = await compactProvider({ provider: providers.codex, prepared, auth: { apiKey: codexToken() }, fetchImpl: async () => ({ ok: true, json: async () => ({ output: [user, compaction] }) }) });
+  assert.deepEqual(codex.input, [compaction], "Codex replay keeps only its opaque compaction output");
 });
 
-test("rejects output that is not exactly one encrypted provider compaction item", async () => {
-  for (const output of [[{ type: "message", encrypted_content: "wrong" }], [{ type: "compaction" }], [{ type: "compaction", encrypted_content: "a" }, { type: "compaction", encrypted_content: "b" }]]) {
-    const result = await compactResponses({ identity: identities.openai, prepared, auth: { apiKey: "synthetic-key" }, fetchImpl: async () => ({ ok: true, json: async () => ({ output }) }) });
-    assert.equal(result.details, undefined);
-    assert.match(result.error.message, /canonical encrypted compaction/i);
+test("malformed provider output is rejected", async () => {
+  for (const output of [[], [{ type: "compaction" }], [{ type: "compaction", encrypted_content: "a" }, { type: "compaction", encrypted_content: "b" }]]) {
+    const result = await compactProvider({ provider: providers.openai, prepared, auth: { apiKey: "key" }, fetchImpl: async () => ({ ok: true, json: async () => ({ output }) }) });
+    assert.equal(result.input, undefined);
+    assert.match(result.error.message, /invalid compaction window/);
   }
 });
 
-test("telemetry never exports provider endpoint or Azure deployment", () => {
-  const checkpoint = checkpointDetails({ identity: identities.azure, opaqueWindow: [{ type: "compaction", encrypted_content: "secret" }] }).checkpoint;
-  const json = JSON.stringify(safeTelemetry("remote_applied", { identity: identities.azure, checkpoint }));
-  assert.equal(json.includes("127.0.0.1"), false);
-  assert.equal(json.includes("private-deployment"), false);
-  assert.equal(json.includes("secret"), false);
+test("checkpoint compatibility is provider-scoped and current-only", () => {
+  const replacedItemHashes = [sha256({ role: "user", content: "placeholder" })];
+  const details = createCheckpoint({ provider: providers.openai, input: [{ type: "compaction", encrypted_content: "opaque" }], replacedItemHashes });
+  const entry = { type: "compaction", summary: "", details };
+  assert.equal(readCheckpoint(entry)?.details.type, BLACKMAGIC_DETAILS_TYPE);
+  assert.equal(sameProvider(details.provider, { ...providers.openai, model: "different-model" }), true);
+  assert.equal(sameProvider(details.provider, providers.azure), false);
+  assert.equal(readCheckpoint({ ...entry, details: { type: BLACKMAGIC_DETAILS_TYPE } }), undefined);
+  assert.equal(readCheckpoint({ ...entry, summary: "old readable summary" }), undefined);
 });
 
-function fakePi() { const handlers = new Map(); return { on: (name, fn) => handlers.set(name, fn), registerCommand() {}, registerEntryRenderer() {}, appendEntry() {}, handlers }; }
-function controllerContext(branch = []) {
+function fakePi() {
+  const handlers = new Map();
+  return { on: (name, handler) => handlers.set(name, handler), registerCommand() {}, handlers };
+}
+function context(branch, model = { provider: "openai", id: "gpt-5.1", baseUrl: "https://api.openai.com/v1", api: "openai-responses" }) {
   return {
-    model: { provider: "openai", id: "gpt-5", baseUrl: "https://api.openai.com/v1", api: "openai-responses" },
-    modelRegistry: {
-      getProvider: () => ({ baseUrl: "https://api.openai.com/v1", api: "openai-responses" }),
-      getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "synthetic-key", headers: { "x-provider-proof": "present" } }),
-    },
-    sessionManager: { getBranch: () => branch, getLeafId: () => "leaf" },
+    model,
+    modelRegistry: { getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "key" }) },
+    sessionManager: { getBranch: () => branch },
+    ui: { setStatus() {} },
   };
 }
 
-test("public request hook replays only its named checkpoint into provider payload, not AgentMessage context", async () => {
-  const pi = fakePi();
-  createServerCompactionController(pi, { summaryFactory: () => "local summary" });
-  const details = checkpointDetails({ identity: { surface: "openai_api", protocol: "responses_compact_v1", endpoint: "https://api.openai.com/v1", model: "gpt-5", api: "openai-responses" }, opaqueWindow: [{ type: "compaction", encrypted_content: "opaque" }] });
-  details.lineage = { firstKeptEntryId: "keep", branchLeafId: "leaf" };
-  const original = { model: "gpt-5", input: [{ role: "user", content: [{ type: "input_text", text: "The conversation history before this point was compacted into the following summary:\n\n<summary>\nlocal summary\n</summary>" }] }, { role: "user", content: "new work" }] };
-  details.replay = { namespace: "hc-openai-server-compaction/3", replacedItemHashes: [sha256(original.input[0])] };
-  const branch = [{ id: "remote-compact", type: "compaction", summary: "local summary", details }];
-  const replayed = await pi.handlers.get("before_provider_request")({ payload: original }, controllerContext(branch));
-  assert.equal(replayed.input[0].encrypted_content, "opaque");
-  assert.equal(JSON.stringify(replayed.input).includes("local summary"), false);
-  assert.equal(JSON.stringify(replayed.input).includes("new work"), true);
-  assert.deepEqual(original.input[0].role, "user", "request hook returns a replacement rather than mutating caller payload");
-});
-
-test("legacy Blackmagic UI placeholders never enter mismatched model context or payloads", async () => {
-  const summary = LEGACY_BLACKMAGIC_MODEL_SUMMARIES.at(-1);
-  const wrapped = `The conversation history before this point was compacted into the following summary:\n\n<summary>\n${summary}\n</summary>`;
-  const summaryInput = { role: "user", content: [{ type: "input_text", text: wrapped }] };
-  const identity = { surface: "openai_api", protocol: "responses_compact_v1", endpoint: "https://api.openai.com/v1", model: "gpt-5", api: "openai-responses" };
-  const details = checkpointDetails({ identity, opaqueWindow: [{ type: "compaction", encrypted_content: "opaque" }] });
-  details.replay = { namespace: "pi-openai-blackmagic-compact/1", replacedItemHashes: [sha256(summaryInput)] };
-  const branch = [{ id: "remote-compact", type: "compaction", summary, details }];
+test("replay crosses models on one provider and never crosses providers", async () => {
+  const placeholder = { role: "user", content: "placeholder" };
+  const details = createCheckpoint({
+    provider: { ...providers.openai, endpoint: "https://api.openai.com/v1" },
+    input: [{ type: "compaction", encrypted_content: "opaque" }],
+    replacedItemHashes: [sha256(placeholder)],
+  });
+  const branch = [{ type: "compaction", summary: "", details }];
   const pi = fakePi();
   createServerCompactionController(pi);
-  const mismatch = { ...controllerContext(branch), model: { ...controllerContext().model, id: "gpt-5.1" } };
-  const visible = { role: "user", content: [{ type: "text", text: "visible work" }] };
-  const projected = await pi.handlers.get("context")({ messages: [{ role: "compactionSummary", summary, tokensBefore: 10 }, visible] }, mismatch);
-  assert.deepEqual(projected.messages, [visible]);
-  const payload = { model: "gpt-5.1", input: [summaryInput, { role: "user", content: "visible work" }] };
-  const sanitized = await pi.handlers.get("before_provider_request")({ payload }, mismatch);
-  assert.doesNotMatch(JSON.stringify(sanitized), /Server-side compaction applied|Keep this model and provider/);
-  assert.match(JSON.stringify(sanitized), /visible work/);
+  const payload = { model: "gpt-5.1", input: [placeholder, { role: "user", content: "new" }] };
+  const replayed = await pi.handlers.get("before_provider_request")({ payload }, context(branch));
+  assert.deepEqual(replayed.input, [{ type: "compaction", encrypted_content: "opaque" }, { role: "user", content: "new" }]);
 
-  const readableBranch = [{ ...branch[0], summary: "readable legacy summary" }];
-  const readablePi = fakePi();
-  createServerCompactionController(readablePi);
-  const readableCtx = { ...mismatch, sessionManager: { ...mismatch.sessionManager, getBranch: () => readableBranch } };
-  assert.equal(await readablePi.handlers.get("context")({ messages: [{ role: "compactionSummary", summary: "readable legacy summary" }, visible] }, readableCtx), undefined);
-});
-
-test("invalid active Blackmagic records stay PROVIDER_MISMATCH and never intercept payloads", async () => {
-  const identity = { surface: "openai_api", protocol: "responses_compact_v1", endpoint: "https://api.openai.com/v1", model: "gpt-5", api: "openai-responses" };
-  const original = { model: "gpt-5", input: [{ role: "user", content: "visible payload" }] };
-  const base = checkpointDetails({ identity, opaqueWindow: [{ type: "compaction", encrypted_content: "opaque" }] });
-  base.replay = { namespace: "pi-openai-blackmagic-compact/1", replacedItemHashes: [sha256(original.input[0])] };
-  const cases = [
-    ["invalid artifact hash", (details) => { details.checkpoint.hash = "invalid"; }],
-    ["empty artifact", (details) => { details.checkpoint.artifact = []; }],
-    ["invalid replay hash", (details) => { details.replay.replacedItemHashes = ["invalid"]; }],
-    ["invalid replay schema", (details) => { details.replay.namespace = "unknown-replay/1"; }],
-    ["exact replay-segment failure", (_details) => {}],
-  ];
-  for (const [label, mutate] of cases) {
-    const details = structuredClone(base);
-    mutate(details);
-    const pi = fakePi();
-    createServerCompactionController(pi);
-    const statuses = [];
-    const ctx = { ...controllerContext([{ id: `remote-${label}`, type: "compaction", details }]), ui: { setStatus: (...args) => statuses.push(args) } };
-    await pi.handlers.get("session_start")({}, ctx);
-    if (label !== "exact replay-segment failure") assert.match(statuses.at(-1)[1], /History unavailable/, label);
-    const payload = { ...original, input: [{ role: "user", content: "different visible payload" }] };
-    assert.deepEqual(await pi.handlers.get("before_provider_request")({ payload }, ctx), payload, label);
-    assert.match(statuses.at(-1)[1], /History unavailable/, label);
-  }
-  const clearCases = [[], [{ type: "compaction", summary: "readable native summary" }], [{ type: "compaction", details: { schemaVersion: 1, state: "local_fallback", failureClass: "remote_error" } }]];
-  for (const branch of clearCases) {
-    const pi = fakePi();
-    createServerCompactionController(pi);
-    const statuses = [];
-    const ctx = { ...controllerContext(branch), ui: { setStatus: (...args) => statuses.push(args) } };
-    await pi.handlers.get("session_start")({}, ctx);
-    assert.equal(statuses.at(-1)[1], undefined, JSON.stringify(branch));
-    const payload = { model: "gpt-5", input: [{ role: "user", content: "readable" }] };
-    assert.deepEqual(await pi.handlers.get("before_provider_request")({ payload }, ctx), payload);
-    assert.equal(statuses.at(-1)[1], undefined, JSON.stringify(branch));
-  }
-});
-
-test("only the latest active replay-capable checkpoint can replay", async () => {
-  const pi = fakePi(); createServerCompactionController(pi, { summaryFactory: () => "local summary" });
-  const identity = { surface: "openai_api", protocol: "responses_compact_v1", endpoint: "https://api.openai.com/v1", model: "gpt-5", api: "openai-responses" };
-  const original = { model: "gpt-5", input: [{ role: "user", content: "old" }] };
-  const remote = { type: "compaction", details: checkpointDetails({ identity, opaqueWindow: [{ type: "compaction", encrypted_content: "opaque" }] }) };
-  remote.details.replay = { namespace: "pi-openai-blackmagic-compact/1", replacedItemHashes: [sha256(original.input[0])] };
-  const local = { type: "compaction", details: { schemaVersion: 1, state: "local_fallback", failureClass: "timeout" } };
-  assert.deepEqual(await pi.handlers.get("before_provider_request")({ payload: original }, controllerContext([remote, local])), original);
-
-  const emptyReplayHash = structuredClone(remote);
-  emptyReplayHash.details.replay.replacedItemHashes = [""];
-  assert.deepEqual(await pi.handlers.get("before_provider_request")({ payload: original }, controllerContext([emptyReplayHash])), original);
-  const corrupted = structuredClone(remote);
-  corrupted.details.checkpoint.hash = "invalid";
-  assert.deepEqual(await pi.handlers.get("before_provider_request")({ payload: original }, controllerContext([corrupted])), original);
-  const empty = structuredClone(remote);
-  empty.details.checkpoint.artifact = [];
-  empty.details.checkpoint.length = 2;
-  empty.details.checkpoint.hash = sha256("[]");
-  assert.deepEqual(await pi.handlers.get("before_provider_request")({ payload: original }, controllerContext([empty])), original);
+  const otherProvider = { provider: "openai-codex", id: "gpt-5.1", baseUrl: "https://chatgpt.com/backend-api", api: "openai-codex-responses" };
+  assert.deepEqual(await pi.handlers.get("before_provider_request")({ payload }, context(branch, otherProvider)), payload);
 });
