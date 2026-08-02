@@ -94,7 +94,8 @@ test("successful compaction uses one Pi entry and human-only TUI text", async ()
   await pi.handlers.get("session_tree")({}, ctx);
   await new Promise((resolve) => setTimeout(resolve, 5));
   assert.deepEqual(notices, [], "tree selection clears a pending acknowledgement");
-  await pi.handlers.get("session_compact")({ compactionEntry, fromExtension: true }, ctx);
+  const staleSameSummaryEntry = { ...compactionEntry, details: { schemaVersion: 1, state: "remote_applied" } };
+  await pi.handlers.get("session_compact")({ compactionEntry: staleSameSummaryEntry, fromExtension: true }, ctx);
   await new Promise((resolve) => setTimeout(resolve, 5));
   assert.deepEqual(notices.at(-1), [BLACKMAGIC_APPLIED_NOTICE, "info"]);
   assert.match(statuses.at(-1)[1], /keep this provider/);

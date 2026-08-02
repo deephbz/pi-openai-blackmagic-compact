@@ -199,7 +199,8 @@ export function createServerCompactionController(pi, options = {}) {
   });
   pi.on("session_compact", async (event, ctx) => {
     const state = await coarseState(ctx);
-    if (event.fromExtension && readCheckpoint(event.compactionEntry)) scheduleAppliedNotice(ctx);
+    const activeEntry = latestActiveCompaction(ctx?.sessionManager?.getBranch?.());
+    if (event.fromExtension && readCheckpoint(activeEntry)) scheduleAppliedNotice(ctx);
     return state;
   });
   pi.on("session_shutdown", (_event, ctx) => {
