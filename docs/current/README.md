@@ -1,10 +1,10 @@
 # Pi OpenAI Blackmagic Compact — current state
 
-As of: 2026-08-01
+As of: 2026-08-02
 
 Stage: hardening.
 
-Status: unreleased source after `0.1.0-rc.3`.
+Status: source package version `0.1.0-rc.4`.
 
 ## Product boundary
 

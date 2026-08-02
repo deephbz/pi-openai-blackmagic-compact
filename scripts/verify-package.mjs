@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url)));
 const expected = {
   name: "@hypercarrier/pi-openai-blackmagic-compact",
-  version: "0.1.0-rc.3",
+  version: "0.1.0-rc.4",
   repository: "git+https://github.com/deephbz/pi-openai-blackmagic-compact.git",
   homepage: "https://github.com/deephbz/pi-openai-blackmagic-compact#readme",
   bugs: "https://github.com/deephbz/pi-openai-blackmagic-compact/issues",

@@ -1,6 +1,6 @@
 {
   "name": "@hypercarrier/pi-openai-blackmagic-compact",
-  "version": "0.1.0-rc.3",
+  "version": "0.1.0-rc.4",
   "description": "Focused Pi hook extension for OpenAI-family server compaction.",
   "repository": { "type": "git", "url": "git+https://github.com/deephbz/pi-openai-blackmagic-compact.git" },
   "homepage": "https://github.com/deephbz/pi-openai-blackmagic-compact#readme",

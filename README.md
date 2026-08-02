@@ -9,7 +9,7 @@ The code in [`src/state-machine.mjs`](src/state-machine.mjs) owns the public sta
 ## Install and use
 
 ```sh
-pi install npm:@hypercarrier/pi-openai-blackmagic-compact@0.1.0-rc.3
+pi install npm:@hypercarrier/pi-openai-blackmagic-compact@0.1.0-rc.4
 # Or use a local checkout:
 pi -e /path/to/pi-openai-blackmagic-compact
 ```
@@ -89,4 +89,4 @@ npm run verify:package
 npm run pack:check
 ```
 
-The current source is unreleased. The package version remains `0.1.0-rc.3` until the next release is assigned.
+The current source has package version `0.1.0-rc.4`.
