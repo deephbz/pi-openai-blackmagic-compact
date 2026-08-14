@@ -17,7 +17,7 @@ With Blackmagic, it first derives the current branch through Pi's normal seriali
 ## Install and use
 
 ```sh
-pi install npm:@hypercarrier/pi-openai-blackmagic-compact@0.1.0-rc.6
+pi install npm:@hypercarrier/pi-openai-blackmagic-compact@0.1.0-rc.7
 # Or test a local checkout:
 pi -e /path/to/pi-openai-blackmagic-compact
 ```
@@ -50,7 +50,7 @@ After a recognized Blackmagic compaction, Pi adds one durable TUI timeline card 
 [server compaction] OpenAI/Azure Responses v1 applied
 ```
 
-The card can also show Codex v2 or a local fallback with an allowlisted failure class. It stores only that small redacted display result. It does not enter LLM context, so it does not change replay, serializer input, or compaction selection.
+The card can also show Codex v2 or a local fallback with an allowlisted failure class. Remote cards expand to show the earlier TUI transcript from the existing session records. The card does not store a transcript copy. It does not enter LLM context, so it does not change replay, serializer input, or compaction selection.
 
 ## How it works
 
@@ -84,4 +84,4 @@ npm run verify:package
 npm run pack:check
 ```
 
-The rc.6 suite checks provider contracts, empty-summary remote compaction, direct current-branch serialization, replay and restart boundaries, timeline persistence, redaction, LLM-context exclusion, package contents, and RPC loading.
+The rc.7 suite checks provider contracts, empty-summary remote compaction, direct current-branch serialization, transcript restoration from source records, replay and restart boundaries, timeline persistence, redaction, LLM-context exclusion, package contents, and RPC loading.
