@@ -18,7 +18,10 @@ if (pkg.publishConfig?.access !== "public") throw new Error("package must publis
 if (!pkg.pi?.extensions?.includes("./src/extension.mjs")) throw new Error("Pi extension manifest missing");
 if (JSON.stringify(pkg.exports) !== JSON.stringify({ ".": "./src/extension.mjs" })) throw new Error("package must expose only the Pi extension entry point");
 if (pkg.dependencies?.["@earendil-works/pi-coding-agent"] || pkg.dependencies?.["@earendil-works/pi-tui"]) throw new Error("Pi runtime must stay a peer dependency");
-if (pkg.peerDependencies?.["@earendil-works/pi-tui"] !== "0.83.0") throw new Error("Pi TUI peer dependency must match the Pi runtime");
+const supportedPiPeerRange = ">=0.83.0 <0.85.0";
+for (const dependency of ["@earendil-works/pi-coding-agent", "@earendil-works/pi-ai", "@earendil-works/pi-tui"]) {
+  if (pkg.peerDependencies?.[dependency] !== supportedPiPeerRange) throw new Error(`${dependency} must declare the verified Pi peer range`);
+}
 
 const packed = new Set(JSON.parse(execFileSync("npm", ["pack", "--dry-run", "--json"], { encoding: "utf8" }))[0].files.map((file) => file.path));
 const allowed = new Set([

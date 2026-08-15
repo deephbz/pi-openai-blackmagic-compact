@@ -91,6 +91,69 @@ for (const [surface, identity] of Object.entries(identities)) test(`${surface} l
   });
 });
 
+test("Pi 0.84 header deletion markers override OpenAI and Azure defaults case-insensitively", async () => {
+  const cases = [
+    {
+      name: "OpenAI Cloudflare placeholder authorization",
+      identity: identities.openai,
+      headers: { "CF-AIG-Authorization": "Bearer cloudflare-placeholder", AUTHORIZATION: null, "X-Mixed-Delete": null },
+      assertHeaders: (headers) => {
+        assert.equal(headers["cf-aig-authorization"], "Bearer cloudflare-placeholder");
+        assert.equal(headers.authorization, undefined);
+      },
+    },
+    {
+      name: "Azure API key",
+      identity: identities.azure,
+      headers: { Authorization: "Bearer cloudflare-placeholder", "API-KEY": null, "X-Mixed-Delete": null },
+      assertHeaders: (headers) => {
+        assert.equal(headers.authorization, "Bearer cloudflare-placeholder");
+        assert.equal(headers["api-key"], undefined);
+      },
+    },
+  ];
+  for (const scenario of cases) {
+    await loopback(async (request, body) => {
+      if (body === undefined) {
+        const remote = { ...scenario.identity, endpoint: request.url + (scenario.identity.surface === "azure_openai" ? "/openai/v1" : "/v1") };
+        const result = await compactProviderInput({ identity: remote, prepared, auth: { apiKey: "synthetic-key", headers: scenario.headers }, fetchImpl: fetch });
+        assert.ok(result.details, result.error?.message);
+        return { body: {} };
+      }
+      scenario.assertHeaders(request.headers);
+      assert.equal(request.headers["x-mixed-delete"], undefined, scenario.name);
+      assert.equal(request.headers["content-type"], "application/json", scenario.name);
+      return { body: { output: [{ type: "compaction", encrypted_content: "opaque" }] } };
+    });
+  }
+});
+
+test("Codex restores only its Pi-native required headers after null overrides", async () => {
+  await loopback(async (request, body) => {
+    if (body === undefined) {
+      const remote = { ...identities.codex, endpoint: request.url + "/backend-api" };
+      const result = await compactProviderInput({
+        identity: remote,
+        prepared,
+        auth: {
+          apiKey: codexToken(),
+          headers: { AUTHORIZATION: null, "CHATGPT-ACCOUNT-ID": null, ORIGINATOR: null, "openai-beta": null, "X-Mixed-Delete": null },
+        },
+        fetchImpl: fetch,
+      });
+      assert.ok(result.details, result.error?.message);
+      return { body: {} };
+    }
+    assert.match(request.headers.authorization, /^Bearer /);
+    assert.equal(request.headers["chatgpt-account-id"], "acct-test");
+    assert.equal(request.headers.originator, "pi");
+    assert.equal(request.headers["openai-beta"], "responses=experimental");
+    assert.equal(request.headers["x-mixed-delete"], undefined);
+    assert.equal(request.headers["content-type"], "application/json");
+    return { body: { output: [{ type: "compaction", encrypted_content: "opaque" }] } };
+  });
+});
+
 test("Codex persists a bounded real-user window plus its one validated compaction item", async () => {
   const result = await compactProviderInput({ identity: identities.codex, prepared: { ...prepared, input: [{ role: "user", content: "keep" }, { role: "assistant", content: "discard" }, { role: "user", name: "hc-control", content: "discard" }] }, auth: { apiKey: codexToken() }, fetchImpl: async () => ({ ok: true, json: async () => ({ output: [{ type: "compaction", encrypted_content: "opaque" }] }) }) });
   assert.deepEqual(result.details.checkpoint.artifact, [{ role: "user", content: "keep" }, { type: "compaction", encrypted_content: "opaque" }]);

@@ -33,19 +33,34 @@ function accountIdFromCodexToken(token) {
   } catch { /* classified as auth below */ }
   throw new Error("Codex authorization has no ChatGPT account identity");
 }
+function mergeHeaders(defaults, overrides) {
+  const merged = new Map();
+  const apply = (name, value) => {
+    const key = name.toLowerCase();
+    if (value === null) merged.delete(key);
+    else if (typeof value === "string") merged.set(key, [name, value]);
+  };
+  for (const [name, value] of Object.entries(defaults)) apply(name, value);
+  for (const [name, value] of Object.entries(overrides ?? {})) apply(name, value);
+  return { set: apply, toObject: () => Object.fromEntries([...merged.values()]) };
+}
 function requestHeaders(identity, auth) {
   if (!auth?.apiKey) throw new Error("resolved provider authorization is unavailable");
-  const headers = { ...(auth.headers ?? {}), "content-type": "application/json" };
-  const has = (name) => Object.keys(headers).some((key) => key.toLowerCase() === name);
-  if (identity.surface === "azure_openai") {
-    if (!has("api-key") && !has("authorization")) headers["api-key"] = auth.apiKey;
-  } else if (!has("authorization")) headers.authorization = `Bearer ${auth.apiKey}`;
+  // Pi 0.84 applies provider overrides after default headers. A null is a
+  // case-insensitive delete, not a Fetch value. Codex restores its required
+  // transport headers after overrides, matching Pi's native Codex ordering.
+  const defaults = identity.surface === "azure_openai"
+    ? { "content-type": "application/json", "api-key": auth.apiKey }
+    : { "content-type": "application/json", authorization: `Bearer ${auth.apiKey}` };
+  const headers = mergeHeaders(defaults, auth.headers);
   if (identity.surface === "chatgpt_codex") {
-    if (!has("chatgpt-account-id")) headers["chatgpt-account-id"] = accountIdFromCodexToken(auth.apiKey);
-    if (!has("originator")) headers.originator = "pi";
-    if (!has("openai-beta")) headers["OpenAI-Beta"] = "responses=experimental";
+    headers.set("Authorization", `Bearer ${auth.apiKey}`);
+    headers.set("chatgpt-account-id", accountIdFromCodexToken(auth.apiKey));
+    headers.set("originator", "pi");
+    headers.set("OpenAI-Beta", "responses=experimental");
+    headers.set("content-type", "application/json");
   }
-  return headers;
+  return headers.toObject();
 }
 function route(identity) {
   if (identity.surface === "chatgpt_codex") return `${identity.endpoint}/codex/responses`;
