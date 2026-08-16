@@ -4,11 +4,11 @@ import { readFileSync } from "node:fs";
 const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url)));
 const expected = {
   name: "@hypercarrier/pi-openai-blackmagic-compact",
-  version: "0.1.0-rc.7",
+  version: "0.1.0-rc.8",
   repository: "git+https://github.com/deephbz/pi-openai-blackmagic-compact.git",
   homepage: "https://github.com/deephbz/pi-openai-blackmagic-compact#readme",
   bugs: "https://github.com/deephbz/pi-openai-blackmagic-compact/issues",
-  author: "Mark Burggraf",
+  author: "deephbz",
 };
 for (const [field, value] of Object.entries(expected)) {
   const actual = field === "repository" ? pkg.repository?.url : field === "bugs" ? pkg.bugs?.url : pkg[field];
@@ -18,9 +18,9 @@ if (pkg.publishConfig?.access !== "public") throw new Error("package must publis
 if (!pkg.pi?.extensions?.includes("./src/extension.mjs")) throw new Error("Pi extension manifest missing");
 if (JSON.stringify(pkg.exports) !== JSON.stringify({ ".": "./src/extension.mjs" })) throw new Error("package must expose only the Pi extension entry point");
 if (pkg.dependencies?.["@earendil-works/pi-coding-agent"] || pkg.dependencies?.["@earendil-works/pi-tui"]) throw new Error("Pi runtime must stay a peer dependency");
-const supportedPiPeerRange = ">=0.83.0 <0.85.0";
+const supportedPiPeerRange = ">=0.83.0";
 for (const dependency of ["@earendil-works/pi-coding-agent", "@earendil-works/pi-ai", "@earendil-works/pi-tui"]) {
-  if (pkg.peerDependencies?.[dependency] !== supportedPiPeerRange) throw new Error(`${dependency} must declare the verified Pi peer range`);
+  if (pkg.peerDependencies?.[dependency] !== supportedPiPeerRange) throw new Error(`${dependency} must declare the supported unbounded Pi peer range`);
 }
 
 const packed = new Set(JSON.parse(execFileSync("npm", ["pack", "--dry-run", "--json"], { encoding: "utf8" }))[0].files.map((file) => file.path));

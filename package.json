@@ -1,6 +1,6 @@
 {
   "name": "@hypercarrier/pi-openai-blackmagic-compact",
-  "version": "0.1.0-rc.7",
+  "version": "0.1.0-rc.8",
   "description": "Focused Pi hook extension for OpenAI-family server compaction.",
   "repository": {
     "type": "git",
@@ -10,7 +10,7 @@
   "bugs": {
     "url": "https://github.com/deephbz/pi-openai-blackmagic-compact/issues"
   },
-  "author": "Mark Burggraf",
+  "author": "deephbz",
   "license": "MIT",
   "type": "module",
   "keywords": [
@@ -22,9 +22,9 @@
     "node": ">=20"
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": ">=0.83.0 <0.85.0",
-    "@earendil-works/pi-ai": ">=0.83.0 <0.85.0",
-    "@earendil-works/pi-tui": ">=0.83.0 <0.85.0"
+    "@earendil-works/pi-coding-agent": ">=0.83.0",
+    "@earendil-works/pi-ai": ">=0.83.0",
+    "@earendil-works/pi-tui": ">=0.83.0"
   },
   "scripts": {
     "test": "node --test test/*.test.mjs",

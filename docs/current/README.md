@@ -1,12 +1,12 @@
 # Pi OpenAI Blackmagic Compact — current state
 
-As of: 2026-08-02
+As of: 2026-08-16
 
-Candidate: 0.1.0-rc.7
+Candidate: 0.1.0-rc.8
 
 Stage: alpha hardening of the narrow direct-compaction contract.
 
-Compatibility: no backward-compatibility guarantee applies before the first stable release.
+Compatibility: Pi peers support version 0.83.0 or later, with no upper bound. No backward-compatibility guarantee applies before the first stable release.
 
 ## Purpose and boundary
 
@@ -28,13 +28,13 @@ Replay requires an active-branch checkpoint, exact provider identity, a supporte
 
 ## Public source lineage
 
-rc.6 extends the sanitized rc.5 current source lineage. The deterministic transform and its minimal source-lineage receipt are recorded in [release/privacy-lineage.v1.json](../../release/privacy-lineage.v1.json).
+rc.8 continues the sanitized rc.5 current source lineage. The deterministic transform and its minimal source-lineage receipt are recorded in [release/privacy-lineage.v1.json](../../release/privacy-lineage.v1.json).
 
 Old tag graphs remain public and are not privacy-clean. Old releases remain immutable. `v0.1.0-rc.4` was an unpublished failed attempt.
 
 ## Evidence
 
-- The rc.7 test suite passes.
+- The rc.8 test suite passes, including the unbounded Pi peer-range release contract.
 - Unit and lifecycle tests cover all three protocol adapters and direct current-branch serialization.
 - The serialization corpus includes custom messages, branch and compaction summaries, included and excluded bash messages, assistant tool calls, and tool results.
 - Tests cover checkpoint replay, source-record transcript restoration, restart and fork boundaries, redacted telemetry, package contents, and RPC loading from another directory.
