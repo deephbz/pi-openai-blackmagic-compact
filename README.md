@@ -62,7 +62,9 @@ This boundary is deliberate: Pi owns the conversation record. Blackmagic adds a 
 
 ## Public source lineage
 
-rc.8 continues the sanitized rc.5 current source lineage. See [the minimal source-lineage receipt](release/privacy-lineage.v1.json).
+rc.8 continues the sanitized rc.5 current source lineage. See the
+[minimal source-lineage receipt](release/privacy-lineage.v1.json) and the
+[rc.8 publication receipt](release/v0.1.0-rc.8-release-receipt.md).
 
 Old tag graphs remain public and are not privacy-clean. Old releases remain immutable. `v0.1.0-rc.4` was an unpublished failed attempt.
 
