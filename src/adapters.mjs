@@ -44,8 +44,17 @@ function mergeHeaders(defaults, overrides) {
   for (const [name, value] of Object.entries(overrides ?? {})) apply(name, value);
   return { set: apply, toObject: () => Object.fromEntries([...merged.values()]) };
 }
+export function validateProviderAuthorization(identity, auth) {
+  if (auth?.ok === false || !auth?.apiKey) return { ok: false, reason: "authorization unavailable" };
+  if (identity?.surface === "chatgpt_codex") {
+    try { return { ok: true, accountId: accountIdFromCodexToken(auth.apiKey) }; }
+    catch { return { ok: false, reason: "Codex credentials have no ChatGPT account identity" }; }
+  }
+  return { ok: true };
+}
 function requestHeaders(identity, auth) {
-  if (!auth?.apiKey) throw new Error("resolved provider authorization is unavailable");
+  const validation = validateProviderAuthorization(identity, auth);
+  if (!validation.ok) throw new Error(validation.reason);
   // Pi 0.84 applies provider overrides after default headers. A null is a
   // case-insensitive delete, not a Fetch value. Codex restores its required
   // transport headers after overrides, matching Pi's native Codex ordering.
@@ -55,7 +64,7 @@ function requestHeaders(identity, auth) {
   const headers = mergeHeaders(defaults, auth.headers);
   if (identity.surface === "chatgpt_codex") {
     headers.set("Authorization", `Bearer ${auth.apiKey}`);
-    headers.set("chatgpt-account-id", accountIdFromCodexToken(auth.apiKey));
+    headers.set("chatgpt-account-id", validation.accountId);
     headers.set("originator", "pi");
     headers.set("OpenAI-Beta", "responses=experimental");
     headers.set("content-type", "application/json");

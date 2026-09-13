@@ -24,13 +24,13 @@ pi -e /path/to/pi-openai-blackmagic-compact
 
 Start Pi as usual, then use `/compact` as usual. Blackmagic has no setup command and does not own Pi's compaction thresholds.
 
-Use this command when you want a short current-state report:
+Use this command to check local readiness for one direct compaction attempt:
 
 ```text
-/server-compact status
+/blackmagic-status
 ```
 
-It sends a transient notification. It does not create a sticky display state.
+It checks the current model route, Pi authorization, branch serialization, and persisted replay. It reports concrete route blockers without exposing endpoint data. It accepts no argument. It does not call the compaction endpoint or guarantee that a later request succeeds. It sends one transient notification and does not create a sticky display state.
 
 ## Supported surfaces
 

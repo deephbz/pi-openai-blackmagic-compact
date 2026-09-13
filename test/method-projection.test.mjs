@@ -22,12 +22,14 @@ test("timeline data has one allowlisted redacted field", () => {
   assert.equal(compactionTimelineLabel({ method: COMPACTION_TIMELINE_METHODS.LOCAL_FALLBACK, failureClass: "timeout" }), "[server compaction] Pi local fallback (timeout)");
   assert.equal(compactionTimelineLabel({ method: "https://secret.invalid" }), undefined);
 });
-test("status uses current model and persisted branch state without readiness state", async () => {
+test("status reports a concrete reason when the current branch has no context", async () => {
   const handlers = new Map(); let command;
   const pi = { on: (name, handler) => handlers.set(name, handler), registerCommand: (_name, value) => { command = value; }, registerEntryRenderer() {}, appendEntry() {} };
   createServerCompactionController(pi);
-  const notices = []; const ctx = { hasUI: true, model: { provider: "openai", id: "gpt-5", baseUrl: "https://api.openai.com/v1", api: "openai-responses" }, sessionManager: { getBranch: () => [remote()] }, ui: { notify: (...args) => notices.push(args) } };
-  await command.handler("status", ctx);
-  assert.match(notices.at(-1)[0], /direct provider compaction/);
-  assert.doesNotMatch(notices.at(-1)[0], /Calibration|Wrappers|assertion|capture/i);
+  const notices = []; const ctx = { hasUI: true, model: { provider: "openai", id: "gpt-5", baseUrl: "https://api.openai.com/v1", api: "openai-responses" }, sessionManager: { getBranch: () => [] }, ui: { notify: (...args) => notices.push(args) } };
+  await command.handler("", ctx);
+  assert.equal(notices.length, 1);
+  assert.match(notices[0][0], /not ready/i);
+  assert.match(notices[0][0], /current branch has no context/i);
+  assert.equal(notices[0][1], "warning");
 });

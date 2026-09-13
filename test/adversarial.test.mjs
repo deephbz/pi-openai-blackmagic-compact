@@ -224,6 +224,19 @@ test("replay invalidation preserves Pi's local-summary payload", async () => {
   assert.ok(telemetry.some((event) => event.type === "remote_invalidated" && event.failureClass === "replay_segment_mismatch"));
 });
 
+test("replay invalidation distinguishes checkpoint identity mismatch from segment mismatch", async () => {
+  const pi = fakePi(); const telemetry = [];
+  createServerCompactionController(pi, { telemetry: (event) => telemetry.push(event) });
+  const currentIdentity = { surface: "openai_api", protocol: "responses_compact_v1", endpoint: "https://api.openai.com/v1", model: "gpt-5", api: "openai-responses" };
+  const original = { model: "gpt-5", input: [{ role: "user", content: "current segment" }] };
+  const details = checkpointDetails({ identity: { ...currentIdentity, model: "old-model" }, opaqueWindow: [{ type: "compaction", encrypted_content: "opaque" }] });
+  details.replay = { namespace: "pi-openai-blackmagic-compact/1", replacedItemHashes: [sha256(original.input[0])] };
+  const replayed = await pi.handlers.get("before_provider_request")({ payload: original }, controllerContext([{ type: "compaction", details }]));
+  assert.equal(replayed, undefined);
+  assert.ok(telemetry.some((event) => event.type === "remote_invalidated" && event.failureClass === "identity_mismatch"));
+  assert.equal(telemetry.some((event) => event.failureClass === "replay_segment_mismatch"), false);
+});
+
 test("only the latest active replay-capable checkpoint can replay", async () => {
   const pi = fakePi(); createServerCompactionController(pi);
   const identity = { surface: "openai_api", protocol: "responses_compact_v1", endpoint: "https://api.openai.com/v1", model: "gpt-5", api: "openai-responses" };

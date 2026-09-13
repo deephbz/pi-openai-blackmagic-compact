@@ -1,6 +1,6 @@
 # Pi OpenAI Blackmagic Compact — current state
 
-As of: 2026-08-16
+As of: 2026-09-13
 
 Candidate: 0.1.0-rc.8
 
@@ -20,7 +20,7 @@ At `session_before_compact`, the package derives AgentMessages from `buildSessio
 
 The probe receives the current system prompt, thinking level, session ID, authorization, and stable serializer options. The package identifies the exact approved surface, applies a matching active checkpoint replay to the derived body when present, and calls the matching compact protocol. A validated result persists an empty summary with its checkpoint. Failure to serialize, authenticate, match replay, compact, or serialize the post-compaction segment returns no hook result, so Pi performs its normal native compaction.
 
-Normal `before_provider_request` only replays an active persisted checkpoint or records its invalidation. It does not affect compaction readiness. `/server-compact status` sends a transient notice from the active branch and current model route. It does not set persistent footer state.
+Normal `before_provider_request` only replays an active persisted checkpoint or records its invalidation. It does not affect compaction readiness. `/blackmagic-status` uses a no-provider-compaction preflight over the active branch and current model route. It reports concrete route blockers such as a missing model, invalid endpoint, non-HTTPS endpoint, or unsupported provider route. It rejects an empty branch, a branch without context, and a branch that already ends in compaction. It resolves authorization through Pi's normal `getApiKeyAndHeaders` resolver, which may refresh auth or use configured auth storage. Codex readiness also validates the account identity required by its transport. The command accepts no argument. It does not call the compaction endpoint or make a model request. It reports readiness for an attempt, not future success, in one transient notice and does not set persistent footer state.
 
 ## Persistence and replay
 

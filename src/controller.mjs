@@ -1,8 +1,8 @@
 import { buildSessionContext, convertToLlm, getMarkdownTheme, sessionEntryToContextMessages } from "@earendil-works/pi-coding-agent";
 import { azureOpenAIResponsesApi, openAICodexResponsesApi, openAIResponsesApi } from "@earendil-works/pi-ai/compat";
 import { Box, Markdown, Text } from "@earendil-works/pi-tui";
-import { compactProviderInput } from "./adapters.mjs";
-import { COMPACTION_TIMELINE_ENTRY_TYPE, compactionTimelineData, compactionTimelineLabel, describeRemoteRoute, identifySurface, identityMatches, latestActiveCompaction, projectCompactionMethod, replaceOneHashSegment, safeTelemetry, sha256 } from "./contract.mjs";
+import { compactProviderInput, validateProviderAuthorization } from "./adapters.mjs";
+import { COMPACTION_TIMELINE_ENTRY_TYPE, compactionTimelineData, compactionTimelineLabel, identifySurface, identityMatches, latestActiveCompaction, replaceOneHashSegment, safeTelemetry, sha256 } from "./contract.mjs";
 
 const DELEGATES = Object.freeze({
   "openai-responses": openAIResponsesApi().streamSimple,
@@ -21,8 +21,8 @@ function azureDeployment(model, auth) {
   for (const entry of String(mapping ?? "").split(",")) { const [id, deployment] = entry.split("=", 2).map((value) => value?.trim()); if (id === model?.id && deployment) return deployment; }
   return model?.id;
 }
-function modelIdentity(ctx, auth) {
-  const model = ctx?.model; const env = auth?.env ?? {};
+function modelIdentity(ctx, auth, modelOverride = ctx?.model) {
+  const model = modelOverride; const env = auth?.env ?? {};
   const baseUrl = model?.api === "azure-openai-responses" ? (env.AZURE_OPENAI_BASE_URL ?? (env.AZURE_OPENAI_RESOURCE_NAME ? `https://${env.AZURE_OPENAI_RESOURCE_NAME}.openai.azure.com/openai/v1` : model?.baseUrl)) : (env.OPENAI_BASE_URL ?? model?.baseUrl);
   return identifySurface({ provider: model?.provider, baseUrl, api: model?.api, model: model?.id, deployment: model?.api === "azure-openai-responses" ? azureDeployment(model, auth) : undefined });
 }
@@ -124,13 +124,49 @@ async function serializePostCompaction(pi, event, ctx, auth, syntheticCompaction
   const messages = convertToLlm(buildSessionContext([...branch, syntheticCompaction]).messages);
   return (await captureNativeBody(ctx.model, { systemPrompt: ctx.getSystemPrompt(), messages, tools: activeTools(pi) }, serializationOptions(ctx, auth, event.signal))).input;
 }
+function routeFailure(identity, model) {
+  if (!model) return "missing model";
+  if (identity.reason === "invalid_endpoint") return "invalid endpoint";
+  if (identity.reason === "insecure_endpoint") return "endpoint not HTTPS";
+  return "unsupported provider route";
+}
+async function preflightCompaction(pi, event, ctx, auth, { rejectEmptyContext = true, model = ctx?.model } = {}) {
+  const branchEntries = event.branchEntries ?? ctx.sessionManager?.getBranch?.();
+  if (rejectEmptyContext) {
+    if (!Array.isArray(branchEntries) || branchEntries.length === 0) return { failure: "current branch has no context" };
+    if (branchEntries.at(-1)?.type === "compaction") return { failure: "current branch already ends with compaction" };
+    try {
+      if (buildSessionContext(branchEntries).messages.length === 0) return { failure: "current branch has no context" };
+    } catch { return { failure: "current branch context unavailable" }; }
+  }
+  const identity = modelIdentity(ctx, auth, model);
+  if (identity.kind !== "supported") return { failure: routeFailure(identity, model) };
+  if (!auth?.ok || !auth.apiKey) return { failure: "authorization unavailable" };
+  const authorization = validateProviderAuthorization(identity, auth);
+  if (!authorization.ok) return { failure: authorization.reason };
+  const modelContext = model === ctx?.model ? ctx : { ...ctx, model };
+  let compactBody;
+  try { compactBody = extractPrepared(await serializeBranch(pi, event, modelContext, auth)); } catch { return { failure: "current branch serialization unavailable" }; }
+  if (!compactBody) return { failure: "current branch serialization unavailable" };
+  const checkpoint = activeCheckpoint(event.branchEntries ?? ctx.sessionManager?.getBranch?.());
+  if (checkpoint) {
+    const replayed = rewriteReplay(compactBody.payload, checkpoint, identity);
+    if (!replayed) return { failure: "persisted replay does not match the current branch" };
+    compactBody = extractPrepared(replayed);
+  }
+  let postSegment;
+  if (event.preparation) {
+    const syntheticCompaction = { type: "compaction", id: "pi-openai-blackmagic-compact-pending", parentId: ctx.sessionManager?.getLeafId?.() ?? "", timestamp: Date.now(), summary: "", firstKeptEntryId: event.preparation.firstKeptEntryId, tokensBefore: event.preparation.tokensBefore };
+    try { postSegment = await serializePostCompaction(pi, event, modelContext, auth, syntheticCompaction); } catch { return { failure: "post-compaction serialization unavailable" }; }
+  }
+  return { identity, compactBody, postSegment };
+}
+
 export function createServerCompactionController(pi, options = {}) {
   if (!pi?.on || !pi?.registerCommand || !pi?.registerEntryRenderer || !pi?.appendEntry) throw new TypeError("A complete Pi ExtensionAPI is required");
   const fetchImpl = options.fetchImpl ?? globalThis.fetch;
   const telemetry = typeof options.telemetry === "function" ? options.telemetry : () => {};
   const emit = (type, data = {}) => { try { telemetry(safeTelemetry(type, data)); } catch {} };
-  const methodFor = (ctx) => projectCompactionMethod(ctx?.sessionManager?.getBranch?.());
-  const routeFor = (ctx) => describeRemoteRoute(modelIdentity(ctx));
   const appendedCompactions = new Set();
   let sessionManager;
 
@@ -155,8 +191,9 @@ export function createServerCompactionController(pi, options = {}) {
     pi.appendEntry(COMPACTION_TIMELINE_ENTRY_TYPE, data);
   });
   pi.on("before_provider_request", async (event, ctx) => {
-    const auth = ctx?.model && typeof ctx?.modelRegistry?.getApiKeyAndHeaders === "function" ? await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model) : undefined;
-    const identity = modelIdentity(ctx, auth);
+    const model = ctx?.model;
+    const auth = model && typeof ctx?.modelRegistry?.getApiKeyAndHeaders === "function" ? await ctx.modelRegistry.getApiKeyAndHeaders(model) : undefined;
+    const identity = modelIdentity(ctx, auth, model);
     if (identity.kind !== "supported") { emit("unsupported_surface", { identity }); return undefined; }
     const checkpoint = activeCheckpoint(ctx?.sessionManager?.getBranch?.());
     const replayed = checkpoint && rewriteReplay(event.payload, checkpoint, identity);
@@ -165,23 +202,14 @@ export function createServerCompactionController(pi, options = {}) {
     return replayed;
   });
   pi.on("session_before_compact", async (event, ctx) => {
-    const canResolveAuth = ctx?.model && typeof ctx?.modelRegistry?.getApiKeyAndHeaders === "function";
+    const model = ctx?.model;
+    const canResolveAuth = model && typeof ctx?.modelRegistry?.getApiKeyAndHeaders === "function";
     if (!canResolveAuth) return undefined;
-    const auth = await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model);
-    const identity = modelIdentity(ctx, auth);
-    if (!auth?.ok || !auth.apiKey || identity.kind !== "supported") return undefined;
-    let compactBody;
-    try { compactBody = extractPrepared(await serializeBranch(pi, event, ctx, auth)); } catch { return undefined; }
-    if (!compactBody) return undefined;
-    const checkpoint = activeCheckpoint(event.branchEntries ?? ctx.sessionManager?.getBranch?.());
-    if (checkpoint) {
-      const replayed = rewriteReplay(compactBody.payload, checkpoint, identity);
-      if (!replayed) return undefined;
-      compactBody = extractPrepared(replayed);
-    }
-    const syntheticCompaction = { type: "compaction", id: "pi-openai-blackmagic-compact-pending", parentId: ctx.sessionManager?.getLeafId?.() ?? "", timestamp: Date.now(), summary: "", firstKeptEntryId: event.preparation.firstKeptEntryId, tokensBefore: event.preparation.tokensBefore };
-    let postSegment;
-    try { postSegment = await serializePostCompaction(pi, event, ctx, auth, syntheticCompaction); } catch { return undefined; }
+    let auth;
+    try { auth = await ctx.modelRegistry.getApiKeyAndHeaders(model); } catch { return undefined; }
+    const preflight = await preflightCompaction(pi, event, ctx, auth, { rejectEmptyContext: false, model });
+    if (preflight.failure) return undefined;
+    const { identity, compactBody, postSegment } = preflight;
     const result = await compactProviderInput({ identity, prepared: compactBody, auth, fetchImpl, signal: event.signal });
     if (!result.details) return undefined;
     result.details.lineage = { firstKeptEntryId: event.preparation.firstKeptEntryId, leafId: ctx.sessionManager?.getLeafId?.() };
@@ -189,11 +217,25 @@ export function createServerCompactionController(pi, options = {}) {
     emit("remote_applied", { identity, ...result.details, checkpoint: result.details.checkpoint });
     return { compaction: { summary: "", firstKeptEntryId: event.preparation.firstKeptEntryId, tokensBefore: event.preparation.tokensBefore, details: result.details } };
   });
-  pi.registerCommand("server-compact", { description: "Show focused server-compaction status or help; it never changes thresholds.", getArgumentCompletions(prefix) { const items = ["status", "help"].filter((x) => x.startsWith(prefix.trim())).map((value) => ({ value, label: value, description: value === "status" ? "Safe current capability status" : "Command usage" })); return items.length ? items : null; }, handler: async (args, ctx) => { const action = args.trim() || "status"; const method = methodFor(ctx); const route = routeFor(ctx); const text = action === "help" ? "Usage: /server-compact [status|help]. It has no agent tool and never owns thresholds." : action === "status" ? [
-    `Active branch: ${method}`,
-    `Next /compact: ${route ? "direct provider compaction when authorization permits it" : "Pi local fallback — current surface is unsupported"}`,
-    ...(route ? [`Route/protocol: ${route}`] : []),
-    "Guaranteed fallback: Pi native local summary.",
-    "Privacy: no prompts, tools, credentials, endpoints, deployments, opaque artifacts, hashes, or item counts.",
-  ].join("\n") : "Usage: /server-compact [status|help]"; if (ctx?.hasUI && typeof ctx.ui?.notify === "function") ctx.ui.notify(text, action === "status" || action === "help" ? "info" : "warning"); } });
+  pi.registerCommand("blackmagic-status", { description: "Check whether /compact can use Blackmagic remote compaction.", handler: async (args, ctx) => {
+    if (typeof args === "string" && args.trim()) {
+      if (ctx?.hasUI && typeof ctx.ui?.notify === "function") ctx.ui.notify("Usage: /blackmagic-status", "warning");
+      return;
+    }
+    const model = ctx?.model;
+    let auth;
+    try {
+      const canResolveAuth = model && typeof ctx?.modelRegistry?.getApiKeyAndHeaders === "function";
+      auth = canResolveAuth ? await ctx.modelRegistry.getApiKeyAndHeaders(model) : undefined;
+    } catch { auth = undefined; }
+    let preflight;
+    if (ctx?.model !== model) preflight = { failure: "current model changed during readiness check; run /blackmagic-status again" };
+    else {
+      let branchEntries;
+      try { branchEntries = ctx?.sessionManager?.getBranch?.() ?? []; } catch { branchEntries = undefined; }
+      preflight = branchEntries ? await preflightCompaction(pi, { branchEntries }, ctx, auth, { model }) : { failure: "current branch unavailable" };
+    }
+    const text = preflight.failure ? `Blackmagic remote compaction: not ready — ${preflight.failure}.` : "Blackmagic remote compaction: ready to attempt with /compact.";
+    if (ctx?.hasUI && typeof ctx.ui?.notify === "function") ctx.ui.notify(text, preflight.failure ? "warning" : "info");
+  } });
 }
