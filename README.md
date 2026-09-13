@@ -17,7 +17,7 @@ With Blackmagic, it first derives the current branch through Pi's normal seriali
 ## Install and use
 
 ```sh
-pi install npm:@hypercarrier/pi-openai-blackmagic-compact@0.1.0-rc.8
+pi install npm:@hypercarrier/pi-openai-blackmagic-compact@0.1.0-rc.9
 # Or test a local checkout:
 pi -e /path/to/pi-openai-blackmagic-compact
 ```
@@ -62,9 +62,10 @@ This boundary is deliberate: Pi owns the conversation record. Blackmagic adds a 
 
 ## Public source lineage
 
-rc.8 continues the sanitized rc.5 current source lineage. See the
-[minimal source-lineage receipt](release/privacy-lineage.v1.json) and the
-[rc.8 publication receipt](release/v0.1.0-rc.8-release-receipt.md).
+rc.9 continues the sanitized rc.5 current source lineage. See the
+[minimal source-lineage receipt](release/privacy-lineage.v1.json). The
+[rc.8 publication receipt](release/v0.1.0-rc.8-release-receipt.md) remains the
+historical evidence for that release.
 
 Old tag graphs remain public and are not privacy-clean. Old releases remain immutable. `v0.1.0-rc.4` was an unpublished failed attempt.
 
@@ -86,4 +87,4 @@ npm run verify:package
 npm run pack:check
 ```
 
-The rc.8 suite checks provider contracts, the unbounded Pi peer range from 0.83.0, empty-summary remote compaction, direct current-branch serialization, saved-checkpoint projection, replay and restart boundaries, timeline persistence, redaction, LLM-context exclusion, package contents, and RPC loading.
+The rc.9 suite checks the readiness status command, saved-checkpoint expansion, provider contracts, the unbounded Pi peer range from 0.83.0, empty-summary remote compaction, direct current-branch serialization, replay and restart boundaries, timeline persistence, redaction, LLM-context exclusion, package contents, and RPC loading.

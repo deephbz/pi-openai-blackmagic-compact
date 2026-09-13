@@ -2,9 +2,12 @@
 
 As of: 2026-09-13
 
-Current published prerelease: `0.1.0-rc.8` on npm `next`. The exact source,
-workflow, registry, and provenance evidence is in the
-[rc.8 release receipt](../../release/v0.1.0-rc.8-release-receipt.md).
+Release line: `0.1.0-rc.9`. It adds the `/blackmagic-status` readiness command
+and saved-checkpoint expansion in the compaction timeline card.
+
+Publication evidence lives in repository release receipts. The
+[rc.8 release receipt](../../release/v0.1.0-rc.8-release-receipt.md) records the
+previous publication's source, workflow, registry, and provenance evidence.
 
 Stage: alpha hardening of the narrow direct-compaction contract.
 
@@ -30,15 +33,15 @@ Replay requires an active-branch checkpoint, exact provider identity, a supporte
 
 ## Public source lineage
 
-rc.8 continues the sanitized rc.5 current source lineage. The deterministic transform and its minimal source-lineage receipt are recorded in [release/privacy-lineage.v1.json](../../release/privacy-lineage.v1.json).
+rc.9 continues the sanitized rc.5 current source lineage. The deterministic transform and its minimal source-lineage receipt are recorded in [release/privacy-lineage.v1.json](../../release/privacy-lineage.v1.json).
 
 Old tag graphs remain public and are not privacy-clean. Old releases remain immutable. `v0.1.0-rc.4` was an unpublished failed attempt.
 
 ## Evidence
 
-- The rc.8 test suite passes, including the unbounded Pi peer-range release contract.
-- OIDC publish run `31930165211` passed from exact `main` source; npm `next`
-  selects rc.8 with verified registry integrity and SLSA provenance.
+- The rc.9 candidate suite passes, including the unbounded Pi peer-range release contract.
+- The rc.8 OIDC publish run `31930165211` passed from exact `main` source.
+  Its receipt records verified registry integrity and SLSA provenance.
 - Unit and lifecycle tests cover all three protocol adapters and direct current-branch serialization.
 - The serialization corpus includes custom messages, branch and compaction summaries, included and excluded bash messages, assistant tool calls, and tool results.
 - Tests cover checkpoint replay, saved-checkpoint projection, restart and fork boundaries, redacted telemetry, package contents, and RPC loading from another directory.
