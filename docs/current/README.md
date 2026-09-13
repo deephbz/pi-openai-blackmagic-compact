@@ -24,7 +24,7 @@ Normal `before_provider_request` only replays an active persisted checkpoint or 
 
 ## Persistence and replay
 
-Replay requires an active-branch checkpoint, exact provider identity, a supported namespace, and exactly one matching contiguous hashed provider-input segment. The opaque provider artifact stays in typed `CompactionEntry.details`; a successful remote compaction writes an empty string to Pi's normal summary field. After a recognized extension compaction, one namespaced custom timeline entry stores only an allowlisted method label. Its parent is the compaction entry. Its expanded TUI view derives the earlier transcript from existing source records. It does not duplicate those records or enter LLM context. Forks before a checkpoint cannot replay it.
+Replay requires an active-branch checkpoint, exact provider identity, a supported namespace, and exactly one matching contiguous hashed provider-input segment. The opaque provider artifact stays in typed `CompactionEntry.details`; a successful remote compaction writes an empty string to Pi's normal summary field. After a recognized extension compaction, one namespaced custom timeline entry stores only an allowlisted method label. Its parent is the compaction entry. Its expanded TUI view reads the saved checkpoint: it shows retained user messages in order and the exact first 100 characters of `encrypted_content` as the approved session-log search prefix. It does not read live replay input or guess from source history, duplicate payload data, or enter LLM context. Terminal controls are escaped, and narrow TUI wrapping can split copied prefix text. Forks before a checkpoint cannot replay it.
 
 ## Public source lineage
 
@@ -37,5 +37,5 @@ Old tag graphs remain public and are not privacy-clean. Old releases remain immu
 - The rc.8 test suite passes, including the unbounded Pi peer-range release contract.
 - Unit and lifecycle tests cover all three protocol adapters and direct current-branch serialization.
 - The serialization corpus includes custom messages, branch and compaction summaries, included and excluded bash messages, assistant tool calls, and tool results.
-- Tests cover checkpoint replay, source-record transcript restoration, restart and fork boundaries, redacted telemetry, package contents, and RPC loading from another directory.
+- Tests cover checkpoint replay, saved-checkpoint projection, restart and fork boundaries, redacted telemetry, package contents, and RPC loading from another directory.
 - Official OpenAI and Azure authenticated canaries remain live-unverified. Pi native compaction remains the fallback when remote compaction cannot produce a validated checkpoint.

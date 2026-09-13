@@ -1,6 +1,6 @@
-import { buildSessionContext, convertToLlm, getMarkdownTheme, sessionEntryToContextMessages } from "@earendil-works/pi-coding-agent";
+import { buildSessionContext, convertToLlm } from "@earendil-works/pi-coding-agent";
 import { azureOpenAIResponsesApi, openAICodexResponsesApi, openAIResponsesApi } from "@earendil-works/pi-ai/compat";
-import { Box, Markdown, Text } from "@earendil-works/pi-tui";
+import { Box, Text } from "@earendil-works/pi-tui";
 import { compactProviderInput, validateProviderAuthorization } from "./adapters.mjs";
 import { COMPACTION_TIMELINE_ENTRY_TYPE, compactionTimelineData, compactionTimelineLabel, identifySurface, identityMatches, latestActiveCompaction, replaceOneHashSegment, safeTelemetry, sha256 } from "./contract.mjs";
 
@@ -46,56 +46,40 @@ function activeTools(pi) {
   return pi.getAllTools().filter((tool) => names.has(tool.name)).map(({ name, description, parameters }) => ({ name, description, parameters }));
 }
 
-function transcriptContent(content) {
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
-  return content.map((block) => {
-    if (block?.type === "text" && typeof block.text === "string") return block.text;
-    if (block?.type === "image") return `[image: ${block.mimeType ?? "unknown"}]`;
+/** Preserve ordinary line breaks and tabs; neutralize terminal controls. */
+function safeDisplayText(value) {
+  return String(value).replace(/[\u0000-\u0008\u000b-\u001f\u007f\u0080-\u009f]/g, (character) => {
+    const code = character.codePointAt(0).toString(16).padStart(2, "0");
+    return `\\x${code}`;
+  });
+}
+function checkpointUserText(item) {
+  if (typeof item?.content === "string") return safeDisplayText(item.content);
+  if (!Array.isArray(item?.content)) return "";
+  return item.content.map((block) => {
+    if ((block?.type === "text" || block?.type === "input_text") && typeof block.text === "string") return safeDisplayText(block.text);
+    if (block?.type === "image" || block?.type === "input_image") return "[image]";
     return "";
   }).filter(Boolean).join("\n");
 }
-function transcriptMessage(message) {
-  if (!message || typeof message !== "object") return "";
-  if (message.role === "user") return transcriptContent(message.content) ? `[User]: ${transcriptContent(message.content)}` : "";
-  if (message.role === "assistant") {
-    const parts = [];
-    for (const block of Array.isArray(message.content) ? message.content : []) {
-      if (block?.type === "thinking" && typeof block.thinking === "string") parts.push(`[Assistant thinking]: ${block.thinking}`);
-      else if (block?.type === "text" && typeof block.text === "string") parts.push(`[Assistant]: ${block.text}`);
-      else if (block?.type === "toolCall") {
-        let argumentsText = "";
-        try { argumentsText = Object.entries(block.arguments ?? {}).map(([key, value]) => `${key}=${JSON.stringify(value)}`).join(", "); } catch { argumentsText = "[unavailable]"; }
-        parts.push(`[Assistant tool call]: ${block.name ?? "unknown"}(${argumentsText})`);
-      }
-    }
-    return parts.join("\n\n");
-  }
-  if (message.role === "toolResult") return transcriptContent(message.content) ? `[Tool result: ${message.toolName ?? "unknown"}]\n${transcriptContent(message.content)}` : "";
-  if (message.role === "bashExecution") return `[Bash]: ${message.command ?? ""}\n${message.output ?? ""}`.trim();
-  if (message.role === "custom" && message.display) return transcriptContent(message.content) ? `[Custom message]: ${transcriptContent(message.content)}` : "";
-  if (message.role === "branchSummary") return message.summary ? `[Branch summary]\n${message.summary}` : "";
-  return "";
-}
 
 /**
- * Derive the pre-compaction transcript from Pi's source records. The returned
- * view is TUI-only; its data stays in the normal session entries once.
+ * Project only the saved provider checkpoint. This is a TUI-only view; it
+ * never reconstructs history from the live branch or adds data to the Session.
  */
-export function compactionArchive(sessionManager, compactionId) {
+export function projectSavedCheckpoint(sessionManager, compactionId) {
   if (!sessionManager || typeof sessionManager.getBranch !== "function" || typeof compactionId !== "string" || !compactionId) return undefined;
   let branch;
   try { branch = sessionManager.getBranch(compactionId); } catch { return undefined; }
   if (!Array.isArray(branch)) return undefined;
   const compaction = branch.find((entry) => entry?.id === compactionId && entry.type === "compaction");
-  const firstKeptIndex = branch.findIndex((entry) => entry?.id === compaction?.firstKeptEntryId);
-  if (!compaction || firstKeptIndex <= 0) return undefined;
-  const messages = branch
-    .slice(0, firstKeptIndex)
-    .filter((entry) => entry?.type === "message" || entry?.type === "branch_summary" || (entry?.type === "custom_message" && entry.display))
-    .flatMap(sessionEntryToContextMessages);
-  const transcript = messages.map(transcriptMessage).filter(Boolean).join("\n\n");
-  return transcript ? { messageCount: messages.length, transcript } : undefined;
+  const artifact = compaction?.details?.checkpoint?.artifact;
+  if (!Array.isArray(artifact)) return undefined;
+  const retainedUsers = artifact.filter((item) => item?.role === "user").map(checkpointUserText).filter(Boolean);
+  const encrypted = artifact.find((item) => item?.type === "compaction" && typeof item.encrypted_content === "string");
+  const encryptedPrefix = encrypted?.encrypted_content.slice(0, 100);
+  if (retainedUsers.length === 0 && !encryptedPrefix) return undefined;
+  return { retainedUsers, encryptedPrefix };
 }
 
 export async function captureNativeBody(model, context, options) {
@@ -174,12 +158,25 @@ export function createServerCompactionController(pi, options = {}) {
   pi.registerEntryRenderer(COMPACTION_TIMELINE_ENTRY_TYPE, (entry, options, theme) => {
     const label = compactionTimelineLabel(entry.data);
     if (!label) return undefined;
-    const archive = compactionArchive(sessionManager, entry.parentId);
+    const archive = projectSavedCheckpoint(sessionManager, entry.parentId);
     const box = new Box(1, 1, (text) => theme.bg("customMessageBg", text));
     box.addChild(new Text(theme.fg("accent", label), 0, 0));
     if (!archive) return box;
-    box.addChild(new Text(theme.fg("customMessageText", `Earlier session messages: ${archive.messageCount} (expand tool output to view)`), 0, 0));
-    if (options.expanded) box.addChild(new Markdown(archive.transcript, 0, 0, getMarkdownTheme(), { color: (text) => theme.fg("customMessageText", text) }));
+    if (!options.expanded) {
+      box.addChild(new Text(theme.fg("customMessageText", "Context saved at this compaction (expand to view)"), 0, 0));
+      return box;
+    }
+    box.addChild(new Text(theme.fg("customMessageText", "Context saved at this compaction"), 0, 0));
+    box.addChild(new Text(theme.fg("dim", "────────────────────────────────"), 0, 0));
+    if (archive.retainedUsers.length > 0) {
+      box.addChild(new Text(theme.fg("accent", "Retained user messages"), 0, 0));
+      for (const message of archive.retainedUsers) box.addChild(new Text(theme.fg("customMessageText", `[User]: ${message}`), 0, 0));
+    }
+    if (archive.encryptedPrefix) {
+      box.addChild(new Text(theme.fg("accent", "Encrypted server context"), 0, 0));
+      box.addChild(new Text(theme.fg("customMessageText", "Session-log search prefix"), 0, 0));
+      box.addChild(new Text(theme.fg("customMessageText", safeDisplayText(archive.encryptedPrefix)), 0, 0));
+    }
     return box;
   });
   pi.on("session_compact", (event, ctx) => {

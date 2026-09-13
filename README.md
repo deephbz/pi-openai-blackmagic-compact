@@ -50,7 +50,7 @@ After a recognized Blackmagic compaction, Pi adds one durable TUI timeline card 
 [server compaction] OpenAI/Azure Responses v1 applied
 ```
 
-The card can also show Codex v2 or a local fallback with an allowlisted failure class. Remote cards expand to show the earlier TUI transcript from the existing session records. The card does not store a transcript copy. It does not enter LLM context, so it does not change replay, serializer input, or compaction selection.
+The card can also show Codex v2 or a local fallback with an allowlisted failure class. A remote card expands to show the saved checkpoint: its retained user messages in order, then the first 100 characters of the encrypted server context as a session-log search prefix. It reads the saved checkpoint instead of live replay input or source history, stores no transcript copy, and does not enter LLM context, so it does not change replay, serializer input, or compaction selection.
 
 ## How it works
 
@@ -70,7 +70,7 @@ Old tag graphs remain public and are not privacy-clean. Old releases remain immu
 
 Pi's native fallback is always available. Blackmagic returns no compaction result for unsupported surfaces or unsafe replay conditions instead of guessing.
 
-Session data can contain opaque provider artifacts. Treat the session file as sensitive history. The visible timeline entry is redacted: it does not persist or render prompts, tools, credentials, endpoints, deployments, models, opaque artifacts, hashes, usage data, or identity objects.
+Session data can contain opaque provider artifacts. Treat the session file as sensitive history. The visible timeline entry does not persist prompts, tools, credentials, endpoints, deployments, models, opaque artifacts, hashes, usage data, or identity objects. When expanded, it renders retained user messages and the approved session-log search prefix: the first 100 characters of the saved encrypted provider artifact. Narrow terminals wrap the prefix, so copied text can split.
 
 ## Limits
 
@@ -84,4 +84,4 @@ npm run verify:package
 npm run pack:check
 ```
 
-The rc.8 suite checks provider contracts, the unbounded Pi peer range from 0.83.0, empty-summary remote compaction, direct current-branch serialization, transcript restoration from source records, replay and restart boundaries, timeline persistence, redaction, LLM-context exclusion, package contents, and RPC loading.
+The rc.8 suite checks provider contracts, the unbounded Pi peer range from 0.83.0, empty-summary remote compaction, direct current-branch serialization, saved-checkpoint projection, replay and restart boundaries, timeline persistence, redaction, LLM-context exclusion, package contents, and RPC loading.

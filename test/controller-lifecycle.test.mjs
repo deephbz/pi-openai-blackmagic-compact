@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
-import { captureNativeBody, compactionArchive, createServerCompactionController, serializationOptions } from "../src/controller.mjs";
+import { captureNativeBody, createServerCompactionController, projectSavedCheckpoint, serializationOptions } from "../src/controller.mjs";
 
 const usage = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
 const model = { provider: "openai", id: "gpt-5", name: "gpt-5", baseUrl: "https://api.openai.com/v1", api: "openai-responses", input: ["text"], reasoning: true, thinkingLevelMap: { high: "high" }, contextWindow: 128000, maxTokens: 8192, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
@@ -113,21 +113,18 @@ test("timeline entries append once after recognized extension compaction only", 
   assert.equal(renderer({ data: { method: "secret-model" } }, {}, { bg: (_key, text) => text, fg: (_key, text) => text }), undefined);
 });
 
-test("remote timeline expands source history without a second summary", () => {
+test("remote timeline expands the saved checkpoint without a second summary", () => {
   const session = SessionManager.inMemory("/tmp");
-  session.appendMessage({ role: "user", content: [{ type: "text", text: "archived user" }], timestamp: 1 });
-  session.appendMessage({ role: "assistant", content: [{ type: "text", text: "archived assistant" }], api: model.api, provider: model.provider, model: model.id, usage, stopReason: "stop", timestamp: 2 });
-  const fullToolResult = `${"x".repeat(2_001)} tool-result-end`;
-  session.appendMessage({ role: "toolResult", toolCallId: "call-1", toolName: "probe", content: [{ type: "text", text: fullToolResult }], isError: false, timestamp: 3 });
-  const kept = session.appendMessage({ role: "user", content: [{ type: "text", text: "kept user" }], timestamp: 4 });
-  const compactionId = session.appendCompaction("", kept, 3, { schemaVersion: 1, state: "remote_applied" }, true);
-  const archive = compactionArchive(session, compactionId);
-  assert.equal(archive.messageCount, 3);
-  assert.match(archive.transcript, /archived user/);
-  assert.match(archive.transcript, /archived assistant/);
-  assert.match(archive.transcript, /tool-result-end/, "the TUI archive keeps complete source output");
-  assert.doesNotMatch(archive.transcript, /kept user/);
-  assert.doesNotMatch(JSON.stringify({ method: "remote_responses_v1" }), /archived user/, "timeline persistence does not duplicate source records");
+  const anchor = session.appendMessage({ role: "user", content: [{ type: "text", text: "anchor" }], timestamp: 1 });
+  const artifact = [
+    { role: "user", content: [{ type: "input_text", text: "saved user" }] },
+    { type: "message", role: "assistant", content: [{ type: "output_text", text: "saved assistant" }] },
+    { type: "compaction", encrypted_content: "opaque-prefix" },
+  ];
+  const compactionId = session.appendCompaction("", anchor, 2, { schemaVersion: 1, state: "remote_applied", checkpoint: { artifact } }, true);
+  const archive = projectSavedCheckpoint(session, compactionId);
+  assert.deepEqual(archive.retainedUsers, ["saved user"]);
+  assert.equal(archive.encryptedPrefix, "opaque-prefix");
 
   const pi = fakePi();
   createServerCompactionController(pi);
@@ -135,8 +132,11 @@ test("remote timeline expands source history without a second summary", () => {
   const renderer = pi.renderers.get("pi-openai-blackmagic-compact/compaction-timeline/1");
   const entry = { type: "custom", parentId: compactionId, data: { method: "remote_responses_v1" } };
   const theme = { bg: (_key, text) => text, fg: (_key, text) => text };
-  assert.doesNotMatch(renderer(entry, { expanded: false }, theme).render(100).join("\n"), /archived user/);
-  assert.match(renderer(entry, { expanded: true }, theme).render(100).join("\n"), /archived user/);
+  assert.doesNotMatch(renderer(entry, { expanded: false }, theme).render(100).join("\n"), /saved user/);
+  const expanded = renderer(entry, { expanded: true }, theme).render(100).join("\n");
+  assert.match(expanded, /saved user/);
+  assert.doesNotMatch(expanded, /saved assistant/);
+  assert.doesNotMatch(JSON.stringify({ method: "remote_responses_v1" }), /saved user/, "timeline persistence does not duplicate artifact records");
 });
 
 test("direct compaction is independent of auxiliary provider requests and defers unsupported models to Pi", async () => {
