@@ -86,8 +86,8 @@ export function identifySurface({ provider, baseUrl, api, model, deployment }) {
     return { kind: "supported", surface: "chatgpt_codex", protocol: PROTOCOLS.chatgpt_codex, endpoint: safeUrl(baseUrl), model, api: api ?? "openai-codex-responses" };
   return { kind: "unsupported", reason: "surface_not_allowlisted" };
 }
-export function identityMatches(checkpoint, identity) {
-  return checkpoint?.schemaVersion === SCHEMA_VERSION && checkpoint?.identity?.surface === identity?.surface && checkpoint?.identity?.protocol === identity?.protocol && checkpoint?.identity?.endpoint === identity?.endpoint && checkpoint?.identity?.model === identity?.model && checkpoint?.identity?.deployment === identity?.deployment && checkpoint?.identity?.api === identity?.api;
+export function replayIdentityMatches(checkpoint, identity) {
+  return checkpoint?.schemaVersion === SCHEMA_VERSION && checkpoint?.identity?.surface === identity?.surface && checkpoint?.identity?.protocol === identity?.protocol && checkpoint?.identity?.endpoint === identity?.endpoint && checkpoint?.identity?.deployment === identity?.deployment && checkpoint?.identity?.api === identity?.api;
 }
 export function checkpointDetails({ identity, opaqueWindow, usage, latencyMs, retention }) {
   if (!Array.isArray(opaqueWindow) || opaqueWindow.length === 0) throw new TypeError("opaque provider window must be non-empty");

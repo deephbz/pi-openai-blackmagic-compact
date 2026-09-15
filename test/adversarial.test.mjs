@@ -1,9 +1,10 @@
 import http from "node:http";
 import test from "node:test";
 import assert from "node:assert/strict";
+import { buildSessionContext, convertToLlm, SessionManager } from "@earendil-works/pi-coding-agent";
 import { compactProviderInput } from "../src/adapters.mjs";
 import { checkpointDetails, identifySurface, safeTelemetry, sha256 } from "../src/contract.mjs";
-import { createServerCompactionController } from "../src/controller.mjs";
+import { captureNativeBody, createServerCompactionController, serializationOptions } from "../src/controller.mjs";
 
 function codexToken() {
   const payload = Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "acct-test" } })).toString("base64url");
@@ -14,6 +15,37 @@ const identities = {
   azure: { surface: "azure_openai", protocol: "responses_compact_v1", endpoint: "http://127.0.0.1:1/openai/v1", model: "gpt-5", deployment: "private-deployment" },
   codex: { surface: "chatgpt_codex", protocol: "codex_compaction_trigger_v2", endpoint: "http://127.0.0.1:1/backend-api", model: "gpt-5" },
 };
+const nativeUsage = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+function nativeModel(provider, id, baseUrl, api) {
+  return { provider, id, name: id, baseUrl, api, input: ["text"], reasoning: true, thinkingLevelMap: { high: "high" }, contextWindow: 128000, maxTokens: 8192, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
+}
+function nativePreparation(firstKeptEntryId) {
+  return { firstKeptEntryId, messagesToSummarize: [], turnPrefixMessages: [], isSplitTurn: false, tokensBefore: 12, fileOps: { read: new Set(), edited: new Set() }, settings: { enabled: true, reserveTokens: 16384, keepRecentTokens: 20000 } };
+}
+async function nativeModelSwitch({ producer, current, auth, producerLookup }) {
+  const session = SessionManager.inMemory("/tmp");
+  const firstKeptEntryId = session.appendMessage({ role: "user", content: [{ type: "text", text: "native switch source" }], timestamp: 1 });
+  session.appendMessage({ role: "assistant", content: [{ type: "thinking", thinking: "native reasoning" }, { type: "text", text: "native assistant" }], api: producer.api, provider: producer.provider, model: producer.id, usage: nativeUsage, stopReason: "stop", timestamp: 2 });
+  session.appendMessage({ role: "assistant", content: [{ type: "thinking", thinking: "tool reasoning" }, { type: "toolCall", id: "native-call", name: "probe", arguments: {} }], api: producer.api, provider: producer.provider, model: producer.id, usage: nativeUsage, stopReason: "toolUse", timestamp: 3 });
+  session.appendMessage({ role: "toolResult", toolCallId: "native-call", toolName: "probe", content: [{ type: "text", text: "native tool result" }], isError: false, timestamp: 4 });
+  const pi = fakePi();
+  const requests = [];
+  createServerCompactionController(pi, { fetchImpl: async (_url, options) => { requests.push(JSON.parse(options.body)); return { ok: true, status: 200, json: async () => ({ output: [{ type: "compaction", encrypted_content: `opaque-${requests.length}` }] }) }; } });
+  const modelRegistry = { getApiKeyAndHeaders: async () => auth };
+  if (producerLookup) modelRegistry.find = (provider, id) => producerLookup(provider, id);
+  const ctx = { model: producer, modelRegistry, sessionManager: session, getSystemPrompt: () => "native switch system", thinkingLevel: "high" };
+  const first = await pi.handlers.get("session_before_compact")({ preparation: nativePreparation(firstKeptEntryId), branchEntries: session.getBranch(), signal: new AbortController().signal }, ctx);
+  assert.equal(first.compaction.details.state, "remote_applied");
+  session.appendCompaction(first.compaction.summary, first.compaction.firstKeptEntryId, first.compaction.tokensBefore, first.compaction.details, true);
+  session.appendMessage({ role: "user", content: [{ type: "text", text: "after native switch" }], timestamp: 5 });
+  const switchedContext = { ...ctx, model: current };
+  const branchEntries = session.getBranch();
+  const signal = new AbortController().signal;
+  const payload = await captureNativeBody(current, { systemPrompt: switchedContext.getSystemPrompt(), messages: convertToLlm(buildSessionContext(branchEntries).messages), tools: [] }, serializationOptions(switchedContext, auth, signal));
+  const replayed = await pi.handlers.get("before_provider_request")({ payload }, switchedContext);
+  const next = await pi.handlers.get("session_before_compact")({ preparation: nativePreparation(branchEntries[0].id), branchEntries, signal }, switchedContext);
+  return { first, payload, replayed, next, requests, identity: first.compaction.details.identity };
+}
 test("approved provider surfaces require HTTPS", () => {
   const candidates = [
     { provider: "openai", baseUrl: "http://api.openai.com/v1", api: "openai-responses", model: "gpt-5" },
@@ -184,7 +216,7 @@ test("telemetry never exports provider endpoint or Azure deployment", () => {
   assert.equal(json.includes("secret"), false);
 });
 
-function fakePi() { const handlers = new Map(); return { on: (name, fn) => handlers.set(name, fn), registerCommand() {}, registerEntryRenderer() {}, appendEntry() {}, handlers }; }
+function fakePi() { const handlers = new Map(); return { on: (name, fn) => handlers.set(name, fn), registerCommand() {}, registerEntryRenderer() {}, appendEntry() {}, getActiveTools: () => [], getAllTools: () => [], handlers }; }
 function controllerContext(branch = []) {
   return {
     model: { provider: "openai", id: "gpt-5", baseUrl: "https://api.openai.com/v1", api: "openai-responses" },
@@ -194,6 +226,21 @@ function controllerContext(branch = []) {
     },
     sessionManager: { getBranch: () => branch, getLeafId: () => "leaf" },
   };
+}
+async function replayWithCurrentModel({ checkpointIdentity, currentModel, auth = { ok: true, apiKey: "synthetic-key" }, checkpointInput = [{ role: "user", content: "current segment" }], payloadInput = checkpointInput, mutatePayload }) {
+  const pi = fakePi();
+  const telemetry = [];
+  createServerCompactionController(pi, { telemetry: (event) => telemetry.push(event) });
+  const details = checkpointDetails({ identity: structuredClone(checkpointIdentity), opaqueWindow: [{ type: "compaction", encrypted_content: "opaque" }] });
+  const original = { model: currentModel.id, input: structuredClone(payloadInput) };
+  details.replay = { namespace: "pi-openai-blackmagic-compact/1", replacedItemHashes: checkpointInput.map(sha256) };
+  mutatePayload?.(original);
+  const replayed = await pi.handlers.get("before_provider_request")({ payload: original }, {
+    model: currentModel,
+    modelRegistry: { getApiKeyAndHeaders: async () => auth },
+    sessionManager: { getBranch: () => [{ type: "compaction", details }], getLeafId: () => "leaf" },
+  });
+  return { details, original, replayed, telemetry };
 }
 
 test("public request hook replays only its named checkpoint into provider payload, not AgentMessage context", async () => {
@@ -229,12 +276,109 @@ test("replay invalidation distinguishes checkpoint identity mismatch from segmen
   createServerCompactionController(pi, { telemetry: (event) => telemetry.push(event) });
   const currentIdentity = { surface: "openai_api", protocol: "responses_compact_v1", endpoint: "https://api.openai.com/v1", model: "gpt-5", api: "openai-responses" };
   const original = { model: "gpt-5", input: [{ role: "user", content: "current segment" }] };
-  const details = checkpointDetails({ identity: { ...currentIdentity, model: "old-model" }, opaqueWindow: [{ type: "compaction", encrypted_content: "opaque" }] });
+  const details = checkpointDetails({ identity: { ...currentIdentity, protocol: "old-protocol" }, opaqueWindow: [{ type: "compaction", encrypted_content: "opaque" }] });
   details.replay = { namespace: "pi-openai-blackmagic-compact/1", replacedItemHashes: [sha256(original.input[0])] };
   const replayed = await pi.handlers.get("before_provider_request")({ payload: original }, controllerContext([{ type: "compaction", details }]));
   assert.equal(replayed, undefined);
   assert.ok(telemetry.some((event) => event.type === "remote_invalidated" && event.failureClass === "identity_mismatch"));
   assert.equal(telemetry.some((event) => event.failureClass === "replay_segment_mismatch"), false);
+});
+
+test("same-route Codex and same-deployment Azure model aliases retain native replay with synthetic auth", async () => {
+  const cases = [
+    {
+      name: "Codex",
+      producer: nativeModel("openai-codex", "gpt-5", "https://chatgpt.com/backend-api", "openai-codex-responses"),
+      current: nativeModel("openai-codex", "gpt-5-mini", "https://chatgpt.com/backend-api", "openai-codex-responses"),
+      auth: { ok: true, apiKey: codexToken() },
+    },
+    {
+      name: "Azure deployment alias",
+      producer: nativeModel("azure-openai-responses", "deployment-alias-a", "https://resource.openai.azure.com/openai/v1", "azure-openai-responses"),
+      current: nativeModel("azure-openai-responses", "deployment-alias-b", "https://resource.openai.azure.com/openai/v1", "azure-openai-responses"),
+      auth: { ok: true, apiKey: "synthetic-key", env: { AZURE_OPENAI_DEPLOYMENT_NAME_MAP: "deployment-alias-a=deployment-a,deployment-alias-b=deployment-a" } },
+    },
+  ];
+  const results = [];
+  for (const scenario of cases) {
+    const result = await nativeModelSwitch(scenario);
+    results.push({ name: scenario.name, replayed: Boolean(result.replayed), nextCompaction: result.next?.compaction?.details?.state, producerIdentity: result.identity });
+    assert.equal(result.replayed?.input.some((item) => item.type === "compaction"), true, `${scenario.name} must replay the opaque checkpoint`);
+    assert.equal(result.next?.compaction?.details?.state, "remote_applied", `${scenario.name} next compaction must remain allowed`);
+    assert.equal(result.requests.length, 2, `${scenario.name} must perform both remote compactions`);
+  }
+  assert.deepEqual(results.map(({ name, replayed, nextCompaction }) => ({ name, replayed, nextCompaction })), [
+    { name: "Codex", replayed: true, nextCompaction: "remote_applied" },
+    { name: "Azure deployment alias", replayed: true, nextCompaction: "remote_applied" },
+  ]);
+});
+
+test("cross-model translation uses registered producer metadata and accepts direct proof when unavailable", async () => {
+  const producer = nativeModel("openai", "gpt-5", "https://api.openai.com/v1", "openai-responses");
+  producer.reasoning = true;
+  producer.thinkingLevelMap = { high: "high" };
+  const current = nativeModel("openai", "gpt-5-mini", "https://api.openai.com/v1", "openai-responses");
+  current.reasoning = false;
+  current.thinkingLevelMap = { off: "off" };
+  const auth = { ok: true, apiKey: "synthetic-key" };
+  const registered = await nativeModelSwitch({ producer, current, auth, producerLookup: (_provider, id) => id === producer.id ? producer : undefined });
+  assert.equal(Boolean(registered.replayed), true, "registered producer metadata must validate translation");
+  assert.equal(registered.next?.compaction?.details?.state, "remote_applied");
+
+  const unavailable = await nativeModelSwitch({ producer, current, auth, producerLookup: () => undefined });
+  assert.equal(Boolean(unavailable.replayed), true, "direct hash proof should allow replay without producer metadata");
+  assert.equal(unavailable.replayed?.input.some((item) => item.type === "compaction"), true);
+  assert.equal(unavailable.next?.compaction?.details?.state, "remote_applied", "direct hash proof should allow the next compaction");
+});
+
+test("replay rejects endpoint, API, protocol, and Azure deployment identity changes", async () => {
+  const cases = [
+    {
+      name: "endpoint",
+      checkpointIdentity: { surface: "openai_api", protocol: "responses_compact_v1", endpoint: "https://api.openai.com/other", model: "gpt-5", api: "openai-responses" },
+      currentModel: { provider: "openai", id: "gpt-5", baseUrl: "https://api.openai.com/v1", api: "openai-responses" },
+    },
+    {
+      name: "API",
+      checkpointIdentity: { surface: "openai_api", protocol: "responses_compact_v1", endpoint: "https://api.openai.com/v1", model: "gpt-5", api: "old-api" },
+      currentModel: { provider: "openai", id: "gpt-5", baseUrl: "https://api.openai.com/v1", api: "openai-responses" },
+    },
+    {
+      name: "protocol",
+      checkpointIdentity: { surface: "openai_api", protocol: "old-protocol", endpoint: "https://api.openai.com/v1", model: "gpt-5", api: "openai-responses" },
+      currentModel: { provider: "openai", id: "gpt-5", baseUrl: "https://api.openai.com/v1", api: "openai-responses" },
+    },
+    {
+      name: "Azure deployment",
+      checkpointIdentity: { surface: "azure_openai", protocol: "responses_compact_v1", endpoint: "https://resource.openai.azure.com/openai/v1", model: "deployment-alias", deployment: "deployment-a", api: "azure-openai-responses" },
+      currentModel: { provider: "azure-openai-responses", id: "deployment-alias", baseUrl: "https://resource.openai.azure.com/openai/v1", api: "azure-openai-responses" },
+      auth: { ok: true, apiKey: "synthetic-key", env: { AZURE_OPENAI_DEPLOYMENT_NAME_MAP: "deployment-alias=deployment-b" } },
+    },
+  ];
+  const outcomes = [];
+  for (const scenario of cases) {
+    const result = await replayWithCurrentModel(scenario);
+    outcomes.push({ name: scenario.name, replayed: Boolean(result.replayed), failureClass: result.telemetry.find((event) => event.type === "remote_invalidated")?.failureClass });
+    assert.deepEqual(result.details.identity, scenario.checkpointIdentity, `${scenario.name} producer identity must remain unchanged`);
+  }
+  assert.deepEqual(outcomes, [
+    { name: "endpoint", replayed: false, failureClass: "identity_mismatch" },
+    { name: "API", replayed: false, failureClass: "identity_mismatch" },
+    { name: "protocol", replayed: false, failureClass: "identity_mismatch" },
+    { name: "Azure deployment", replayed: false, failureClass: "identity_mismatch" },
+  ]);
+});
+
+test("replay rejects altered source prefixes and independently rejects payload tampering", async () => {
+  const identity = { surface: "openai_api", protocol: "responses_compact_v1", endpoint: "https://api.openai.com/v1", model: "gpt-5", api: "openai-responses" };
+  const source = { role: "user", content: "canonical source prefix" };
+  const altered = await replayWithCurrentModel({ checkpointIdentity: identity, currentModel: { provider: "openai", id: "gpt-5", baseUrl: "https://api.openai.com/v1", api: "openai-responses" }, checkpointInput: [source], payloadInput: [{ role: "user", content: "altered source prefix" }] });
+  assert.equal(altered.replayed, undefined);
+  assert.ok(altered.telemetry.some((event) => event.failureClass === "replay_segment_mismatch"));
+
+  const tampered = await replayWithCurrentModel({ checkpointIdentity: identity, currentModel: { provider: "openai", id: "gpt-5", baseUrl: "https://api.openai.com/v1", api: "openai-responses" }, checkpointInput: [source], mutatePayload: (payload) => { payload.input[0].content = "tampered after hash creation"; } });
+  assert.equal(tampered.replayed, undefined);
+  assert.ok(tampered.telemetry.some((event) => event.failureClass === "replay_segment_mismatch"));
 });
 
 test("only the latest active replay-capable checkpoint can replay", async () => {
