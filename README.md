@@ -45,7 +45,7 @@ existing release.
 Known limits:
 
 - A UI-only tail can report remote readiness while Pi declines native `/compact` work.
-- Early authenticated live runs observed HTTP 400 responses. Authenticated remote acceptance and cross-model acceptance remain unverified.
+- An authenticated Pi 0.85.1 canary passed remote compaction and fresh-process replay from `gpt-5.6-luna` to `gpt-5.6-sol` on the same Codex route. See the [bounded canary evidence](release/v0.1.0-rc.10-authenticated-canary.md). Other model pairs remain unverified.
 - The historical live HTTP count is uncertain because earlier runs did not fully control WebSocket transport. The observed count is evidence, not a verified total.
 
 ## Supported surfaces
@@ -72,7 +72,7 @@ The card can also show Codex v2 or a local fallback with an allowlisted failure 
 
 During `session_before_compact`, Blackmagic derives the authoritative current branch with Pi's canonical conversion and native serializer. It uses that result for an approved server compaction attempt without calling Pi's native compaction model.
 
-Pi then owns and persists the returned atomic Session mutation. On remote success, its summary is the empty string and the package stores one opaque provider window in normal compaction details. Later requests can replay that checkpoint when the active branch and supported route identity match, including an eligible model switch. Blackmagic preserves the producer model and translates model-dependent serialization only after exact hash validation. New checkpoints separate conversation replay from current request instructions and tools. Legacy checkpoints retain their full-input proof requirement. Cross-model provider acceptance remains live-unverified. A provider rejection does not trigger an automatic retry. The timeline card follows `session_compact` as a separate TUI-only custom entry.
+Pi then owns and persists the returned atomic Session mutation. On remote success, its summary is the empty string and the package stores one opaque provider window in normal compaction details. Later requests can replay that checkpoint when the active branch and supported route identity match, including an eligible model switch. Blackmagic preserves the producer model and translates model-dependent serialization only after exact hash validation. New checkpoints separate conversation replay from current request instructions and tools. Legacy checkpoints retain their full-input proof requirement. The [authenticated canary](release/v0.1.0-rc.10-authenticated-canary.md) verifies one Codex model pair; other pairs remain unverified. A provider rejection does not trigger an automatic retry. The timeline card follows `session_compact` as a separate TUI-only custom entry.
 
 This boundary is deliberate: Pi owns the conversation record. Blackmagic adds a narrow server checkpoint path. It does not register or wrap providers, observe normal provider calls, create handoffs, or change thresholds.
 

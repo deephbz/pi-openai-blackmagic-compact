@@ -77,5 +77,5 @@ Old tag graphs remain public and are not privacy-clean. Old releases remain immu
 - Unit and lifecycle tests cover all three protocol adapters and direct current-branch serialization.
 - The serialization corpus includes custom messages, branch and compaction summaries, included and excluded bash messages, assistant tool calls, and tool results.
 - Tests cover checkpoint replay, same-route model-switch translation, saved-checkpoint projection, restart and fork boundaries, redacted telemetry, package contents, and RPC loading from another directory.
-- Cross-model replay passes deterministic tests; authenticated cross-model acceptance remains unverified.
+- Cross-model replay passes deterministic tests. An [authenticated Pi 0.85.1 canary](../../release/v0.1.0-rc.10-authenticated-canary.md) verifies fresh-process Codex replay from `gpt-5.6-luna` to `gpt-5.6-sol` with no plaintext nonce in the replay request. Other pairs remain unverified.
 - Official OpenAI and Azure authenticated canaries remain live-unverified. Pi native compaction remains the fallback when remote compaction cannot produce a validated checkpoint.
