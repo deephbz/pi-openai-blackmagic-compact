@@ -2,7 +2,7 @@ import { buildSessionContext, convertToLlm } from "@earendil-works/pi-coding-age
 import { azureOpenAIResponsesApi, openAICodexResponsesApi, openAIResponsesApi } from "@earendil-works/pi-ai/compat";
 import { Box, Text } from "@earendil-works/pi-tui";
 import { compactProviderInput, validateProviderAuthorization } from "./adapters.mjs";
-import { COMPACTION_TIMELINE_ENTRY_TYPE, compactionTimelineData, compactionTimelineLabel, identifySurface, identityMatches, latestActiveCompaction, replaceOneHashSegment, safeTelemetry, sha256 } from "./contract.mjs";
+import { COMPACTION_TIMELINE_ENTRY_TYPE, compactionTimelineData, compactionTimelineLabel, identifySurface, latestActiveCompaction, replayIdentityMatches, replaceOneHashSegment, safeTelemetry, sha256 } from "./contract.mjs";
 
 const DELEGATES = Object.freeze({
   "openai-responses": openAIResponsesApi().streamSimple,
@@ -10,6 +10,7 @@ const DELEGATES = Object.freeze({
   "azure-openai-responses": azureOpenAIResponsesApi().streamSimple,
 });
 const REPLAY_NAMESPACE = "pi-openai-blackmagic-compact/1";
+const REPLAY_SCOPE = "conversation";
 class SerializationProbeComplete extends Error {}
 
 function extractPrepared(payload) {
@@ -29,16 +30,97 @@ function modelIdentity(ctx, auth, modelOverride = ctx?.model) {
 function activeCheckpoint(branch) {
   const entry = latestActiveCompaction(branch);
   const details = entry?.details; const replay = details?.replay; const checkpoint = details?.checkpoint;
-  if (details?.schemaVersion !== 1 || details.state !== "remote_applied" || replay?.namespace !== REPLAY_NAMESPACE || !Array.isArray(replay.replacedItemHashes) || !replay.replacedItemHashes.length || replay.replacedItemHashes.some((hash) => !/^[0-9a-f]{64}$/.test(hash)) || !Array.isArray(checkpoint?.artifact) || !checkpoint.artifact.length) return undefined;
-  const serialized = JSON.stringify(checkpoint.artifact);
-  if (checkpoint.hash !== sha256(serialized) || checkpoint.length !== serialized.length) return undefined;
-  return { entry, details };
+  if (details?.schemaVersion !== 1 || details.state !== "remote_applied" || replay?.namespace !== REPLAY_NAMESPACE) return undefined;
+  const serialized = JSON.stringify(checkpoint?.artifact);
+  const valid = replay.scope === undefined || replay.scope === REPLAY_SCOPE;
+  const replayHashesValid = Array.isArray(replay.replacedItemHashes) && replay.replacedItemHashes.length > 0 && replay.replacedItemHashes.every((hash) => /^[0-9a-f]{64}$/.test(hash));
+  const artifactValid = Array.isArray(checkpoint?.artifact) && checkpoint.artifact.length > 0 && checkpoint.hash === sha256(serialized) && checkpoint.length === serialized.length;
+  return valid && replayHashesValid && artifactValid ? { entry, details } : { entry, details, invalid: true };
 }
-function rewriteReplay(payload, checkpoint, identity) {
+function isRequestInstruction(item) {
+  return item?.role === "developer" || item?.role === "system";
+}
+function conversationInput(input) {
+  return Array.isArray(input) ? input.filter((item) => !isRequestInstruction(item)) : [];
+}
+function hashSegmentStart(input, hashes) {
+  if (!Array.isArray(input) || !Array.isArray(hashes) || hashes.length === 0) return undefined;
+  const itemHashes = input.map((item) => sha256(item));
+  let match;
+  for (let start = 0; start <= itemHashes.length - hashes.length; start += 1) {
+    if (!hashes.every((hash, index) => itemHashes[start + index] === hash)) continue;
+    if (match !== undefined) return undefined;
+    match = start;
+  }
+  return match;
+}
+function replaceConversationSegment(payload, hashes, artifact) {
+  if (!Array.isArray(payload?.input) || !Array.isArray(hashes) || hashes.length === 0 || !Array.isArray(artifact)) return undefined;
+  const conversationIndexes = payload.input.map((item, index) => isRequestInstruction(item) ? undefined : index).filter((index) => index !== undefined);
+  const conversation = conversationIndexes.map((index) => payload.input[index]);
+  const start = hashSegmentStart(conversation, hashes);
+  if (start === undefined) return undefined;
+  const matchedIndexes = new Set(conversationIndexes.slice(start, start + hashes.length));
+  const inputStart = conversationIndexes[start];
+  const input = [];
+  for (let index = 0; index < payload.input.length; index += 1) {
+    if (index === inputStart) input.push(...artifact);
+    if (!matchedIndexes.has(index)) input.push(payload.input[index]);
+  }
+  return { ...payload, input };
+}
+function replaceLegacyReplay(payload, hashes, artifact) {
+  const start = hashSegmentStart(payload?.input, hashes);
+  if (start === undefined) return undefined;
+  let instructionCount = 0;
+  while (instructionCount < hashes.length && isRequestInstruction(payload.input[start + instructionCount])) instructionCount += 1;
+  const input = [...payload.input.slice(0, start + instructionCount), ...artifact, ...payload.input.slice(start + hashes.length)];
+  return { ...payload, input };
+}
+function replaceDirectReplay(payload, replay, artifact) {
+  return replay?.scope === REPLAY_SCOPE
+    ? replaceConversationSegment(payload, replay.replacedItemHashes, artifact)
+    : replaceLegacyReplay(payload, replay?.replacedItemHashes, artifact);
+}
+function producerModel(ctx, identity) {
+  const current = ctx?.model;
+  if (!current || typeof identity?.model !== "string" || !identity.model) return undefined;
+  if (current.id === identity.model) return current;
+  const configured = typeof ctx.modelRegistry?.find === "function" ? ctx.modelRegistry.find(current.provider, identity.model) : undefined;
+  return configured ?? { ...current, id: identity.model, name: identity.model };
+}
+function checkpointPrefix(branch, checkpoint) {
+  if (!Array.isArray(branch) || !checkpoint?.entry) return undefined;
+  const checkpointIndex = branch.findIndex((entry) => entry?.id === checkpoint.entry.id && entry.type === "compaction");
+  if (checkpointIndex < 0) return undefined;
+  return branch.slice(0, checkpointIndex + 1);
+}
+async function translateReplay(payload, checkpoint, identity, pi, ctx, auth, branch) {
   const replay = checkpoint?.details?.replay;
-  if (!payload || !identityMatches(checkpoint.details, identity) || replay?.namespace !== REPLAY_NAMESPACE) return undefined;
-  const next = replaceOneHashSegment(payload.input, replay.replacedItemHashes, checkpoint.details.checkpoint?.artifact);
-  return next ? { ...payload, input: next } : undefined;
+  if (!payload || !replayIdentityMatches(checkpoint?.details, identity) || replay?.namespace !== REPLAY_NAMESPACE) return undefined;
+  const direct = replaceDirectReplay(payload, replay, checkpoint.details.checkpoint?.artifact);
+  if (direct) return direct;
+  if (ctx?.model?.id === checkpoint.details?.identity?.model) return undefined;
+  let producerPayload;
+  let currentPayload;
+  try {
+    const sourceBranch = checkpointPrefix(branch, checkpoint);
+    const model = producerModel(ctx, checkpoint.details.identity);
+    if (!sourceBranch || !model || typeof ctx?.getSystemPrompt !== "function") return undefined;
+    // Prove the stored producer segment, then translate that exact prefix once.
+    const context = { systemPrompt: ctx.getSystemPrompt(), messages: convertToLlm(buildSessionContext(sourceBranch).messages), tools: activeTools(pi) };
+    producerPayload = await captureNativeBody(model, context, serializationOptions(ctx, auth, ctx.signal));
+    currentPayload = await captureNativeBody(ctx.model, context, serializationOptions(ctx, auth, ctx.signal));
+  } catch {
+    return undefined;
+  }
+  const producerConversation = conversationInput(producerPayload.input);
+  const producerProof = replay.scope === REPLAY_SCOPE
+    ? replaceOneHashSegment(producerConversation, replay.replacedItemHashes, [])
+    : replaceOneHashSegment(producerPayload.input, replay.replacedItemHashes, []);
+  if (!producerProof || producerProof.length !== 0) return undefined;
+  const currentHashes = conversationInput(currentPayload.input).map((item) => sha256(item));
+  return replaceConversationSegment(payload, currentHashes, checkpoint.details.checkpoint?.artifact);
 }
 function activeTools(pi) {
   if (typeof pi?.getActiveTools !== "function" || typeof pi?.getAllTools !== "function") throw new Error("Pi tool access is unavailable");
@@ -133,8 +215,9 @@ async function preflightCompaction(pi, event, ctx, auth, { rejectEmptyContext = 
   try { compactBody = extractPrepared(await serializeBranch(pi, event, modelContext, auth)); } catch { return { failure: "current branch serialization unavailable" }; }
   if (!compactBody) return { failure: "current branch serialization unavailable" };
   const checkpoint = activeCheckpoint(event.branchEntries ?? ctx.sessionManager?.getBranch?.());
+  if (checkpoint?.invalid) return { failure: "persisted replay checkpoint is invalid" };
   if (checkpoint) {
-    const replayed = rewriteReplay(compactBody.payload, checkpoint, identity);
+    const replayed = await translateReplay(compactBody.payload, checkpoint, identity, pi, modelContext, auth, branchEntries);
     if (!replayed) return { failure: "persisted replay does not match the current branch" };
     compactBody = extractPrepared(replayed);
   }
@@ -192,10 +275,14 @@ export function createServerCompactionController(pi, options = {}) {
     const auth = model && typeof ctx?.modelRegistry?.getApiKeyAndHeaders === "function" ? await ctx.modelRegistry.getApiKeyAndHeaders(model) : undefined;
     const identity = modelIdentity(ctx, auth, model);
     if (identity.kind !== "supported") { emit("unsupported_surface", { identity }); return undefined; }
-    const checkpoint = activeCheckpoint(ctx?.sessionManager?.getBranch?.());
-    const replayed = checkpoint && rewriteReplay(event.payload, checkpoint, identity);
+    const modelContext = model === ctx?.model ? ctx : { ...ctx, model };
+    let branch;
+    try { branch = ctx?.sessionManager?.getBranch?.(); } catch { branch = undefined; }
+    const checkpoint = activeCheckpoint(branch);
+    const replayed = checkpoint && !checkpoint.invalid ? await translateReplay(event.payload, checkpoint, identity, pi, modelContext, auth, branch) : undefined;
     if (replayed) emit("remote_replayed", { identity, checkpoint: checkpoint.details.checkpoint, retention: checkpoint.details.checkpoint.retention });
-    else if (checkpoint?.details?.schemaVersion === 1) emit("remote_invalidated", { identity, failureClass: identityMatches(checkpoint.details, identity) ? "replay_segment_mismatch" : "identity_mismatch" });
+    else if (checkpoint?.invalid) emit("remote_invalidated", { identity, failureClass: "replay_segment_mismatch" });
+    else if (checkpoint?.details?.schemaVersion === 1) emit("remote_invalidated", { identity, failureClass: replayIdentityMatches(checkpoint.details, identity) ? "replay_segment_mismatch" : "identity_mismatch" });
     return replayed;
   });
   pi.on("session_before_compact", async (event, ctx) => {
@@ -210,7 +297,7 @@ export function createServerCompactionController(pi, options = {}) {
     const result = await compactProviderInput({ identity, prepared: compactBody, auth, fetchImpl, signal: event.signal });
     if (!result.details) return undefined;
     result.details.lineage = { firstKeptEntryId: event.preparation.firstKeptEntryId, leafId: ctx.sessionManager?.getLeafId?.() };
-    result.details.replay = { namespace: REPLAY_NAMESPACE, replacedItemHashes: postSegment.map((item) => sha256(item)) };
+    result.details.replay = { namespace: REPLAY_NAMESPACE, scope: REPLAY_SCOPE, replacedItemHashes: conversationInput(postSegment).map((item) => sha256(item)) };
     emit("remote_applied", { identity, ...result.details, checkpoint: result.details.checkpoint });
     return { compaction: { summary: "", firstKeptEntryId: event.preparation.firstKeptEntryId, tokensBefore: event.preparation.tokensBefore, details: result.details } };
   });

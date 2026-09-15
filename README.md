@@ -16,8 +16,11 @@ With Blackmagic, it first derives the current branch through Pi's normal seriali
 
 ## Install and use
 
+Version `0.1.0-rc.10` contains the replay/readiness fixes. See the
+[rc.10 release notes](release/v0.1.0-rc.10-release-notes.md).
+
 ```sh
-pi install npm:@hypercarrier/pi-openai-blackmagic-compact@0.1.0-rc.9
+pi install npm:@hypercarrier/pi-openai-blackmagic-compact@0.1.0-rc.10
 # Or test a local checkout:
 pi -e /path/to/pi-openai-blackmagic-compact
 ```
@@ -31,6 +34,19 @@ Use this command to check local readiness for one direct compaction attempt:
 ```
 
 It checks the current model route, Pi authorization, branch serialization, and persisted replay. It reports concrete route blockers without exposing endpoint data. It accepts no argument. It does not call the compaction endpoint or guarantee that a later request succeeds. It sends one transient notification and does not create a sticky display state.
+
+## 0.1.0-rc.10 release candidate
+
+This candidate adds conversation-scoped replay that preserves current request
+instructions and tools, plus fail-closed handling for damaged persisted
+checkpoints. It targets the `next` dist-tag; published `latest` remains on the
+existing release.
+
+Known limits:
+
+- A UI-only tail can report remote readiness while Pi declines native `/compact` work.
+- Early authenticated live runs observed HTTP 400 responses. Authenticated remote acceptance and cross-model acceptance remain unverified.
+- The historical live HTTP count is uncertain because earlier runs did not fully control WebSocket transport. The observed count is evidence, not a verified total.
 
 ## Supported surfaces
 
@@ -56,7 +72,7 @@ The card can also show Codex v2 or a local fallback with an allowlisted failure 
 
 During `session_before_compact`, Blackmagic derives the authoritative current branch with Pi's canonical conversion and native serializer. It uses that result for an approved server compaction attempt without calling Pi's native compaction model.
 
-Pi then owns and persists the returned atomic Session mutation. On remote success, its summary is the empty string and the package stores one opaque provider window in normal compaction details. Later requests can replay that checkpoint only when the active branch and approved provider identity match. The timeline card follows `session_compact` as a separate TUI-only custom entry.
+Pi then owns and persists the returned atomic Session mutation. On remote success, its summary is the empty string and the package stores one opaque provider window in normal compaction details. Later requests can replay that checkpoint when the active branch and supported route identity match, including an eligible model switch. Blackmagic preserves the producer model and translates model-dependent serialization only after exact hash validation. New checkpoints separate conversation replay from current request instructions and tools. Legacy checkpoints retain their full-input proof requirement. Cross-model provider acceptance remains live-unverified. A provider rejection does not trigger an automatic retry. The timeline card follows `session_compact` as a separate TUI-only custom entry.
 
 This boundary is deliberate: Pi owns the conversation record. Blackmagic adds a narrow server checkpoint path. It does not register or wrap providers, observe normal provider calls, create handoffs, or change thresholds.
 
@@ -87,4 +103,4 @@ npm run verify:package
 npm run pack:check
 ```
 
-The rc.9 suite checks the readiness status command, saved-checkpoint expansion, provider contracts, the unbounded Pi peer range from 0.83.0, empty-summary remote compaction, direct current-branch serialization, replay and restart boundaries, timeline persistence, redaction, LLM-context exclusion, package contents, and RPC loading.
+The rc.10 candidate suite checks the readiness status command, saved-checkpoint expansion, provider contracts, the unbounded Pi peer range from 0.83.0, empty-summary remote compaction, direct current-branch serialization, replay and restart boundaries, timeline persistence, redaction, LLM-context exclusion, package contents, and RPC loading.
