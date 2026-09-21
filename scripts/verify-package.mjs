@@ -1,10 +1,11 @@
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, rmSync } from "node:fs";
+import { resolve } from "node:path";
 
-const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url)));
+const root = resolve(new URL("..", import.meta.url).pathname);
+const pkg = JSON.parse(execFileSync("git", ["show", "HEAD:package.json"], { cwd: root, encoding: "utf8" }));
 const expected = {
   name: "@hypercarrier/pi-openai-blackmagic-compact",
-  version: "0.1.0-rc.12",
   repository: "git+https://github.com/deephbz/pi-openai-blackmagic-compact.git",
   homepage: "https://github.com/deephbz/pi-openai-blackmagic-compact#readme",
   bugs: "https://github.com/deephbz/pi-openai-blackmagic-compact/issues",
@@ -23,7 +24,14 @@ for (const dependency of ["@earendil-works/pi-coding-agent", "@earendil-works/pi
   if (pkg.peerDependencies?.[dependency] !== supportedPiPeerRange) throw new Error(`${dependency} must declare the supported unbounded Pi peer range`);
 }
 
-const packed = new Set(JSON.parse(execFileSync("npm", ["pack", "--dry-run", "--json"], { encoding: "utf8" }))[0].files.map((file) => file.path));
+const suppliedTarball = process.env.RELEASE_TARBALL;
+const tarball = suppliedTarball
+  ? resolve(process.cwd(), suppliedTarball)
+  : resolve(process.cwd(), JSON.parse(execFileSync("npm", ["pack", "--json", "--ignore-scripts"], { encoding: "utf8" }))[0].filename);
+const packedManifest = JSON.parse(execFileSync("tar", ["-xOf", tarball, "package/package.json"], { encoding: "utf8" }));
+if (packedManifest.name !== pkg.name) throw new Error("packed package name differs from selected source");
+if (packedManifest.version !== pkg.version) throw new Error("packed package version differs from selected source");
+const packed = new Set(execFileSync("tar", ["-tf", tarball], { encoding: "utf8" }).trim().split("\n").filter(Boolean).map((file) => file.replace(/^package\//, "")));
 const allowed = new Set([
   "LICENSE", "README.md", "package.json", "docs/current/README.md", "scripts/verify-package.mjs",
   "src/adapters.mjs", "src/contract.mjs", "src/controller.mjs", "src/extension.mjs",
@@ -38,3 +46,4 @@ for (const file of allowed) if (!packed.has(file)) throw new Error(`package omit
 for (const file of sourceOnly) if (packed.has(file)) throw new Error(`package contains source-only release record: ${file}`);
 for (const file of packed) if (/hc-openai-server-compaction|(^|\/)test(\/|$)|package-lock\.json/.test(file)) throw new Error(`package contains forbidden boundary: ${file}`);
 console.log("package verification passed");
+if (!suppliedTarball) rmSync(tarball, { force: true });

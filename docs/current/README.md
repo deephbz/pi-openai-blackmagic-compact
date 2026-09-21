@@ -2,17 +2,11 @@
 
 As of: 2026-09-21
 
-Source base: `0.1.0-rc.11`. Current metadata: `0.1.0-rc.12`.
-The prior release boundary is documented in the [GitHub rc.11 release](https://github.com/deephbz/pi-openai-blackmagic-compact/releases/tag/v0.1.0-rc.11).
-
-The current source carries serializer-drift lineage fallback for provider
-requests and compaction preflight, Session-leaf timeline ownership, configured
-HTTPS GPT-5/GPT-6 Responses recognition, and Session-local controls for new
-remote compaction attempts. Earlier release notes: [rc.11](../../release/v0.1.0-rc.11-release-notes.md). See the [rc.12 release notes](../../release/v0.1.0-rc.12-release-notes.md).
-
-Publication evidence lives in repository release receipts. The
-[rc.8 release receipt](../../release/v0.1.0-rc.8-release-receipt.md) records the
-previous publication's source, workflow, registry, and provenance evidence.
+The source carries serializer-drift lineage fallback for provider requests
+and compaction preflight, Session-leaf timeline ownership, configured HTTPS
+GPT-5/GPT-6 Responses recognition, and Session-local controls for new remote
+compaction attempts. Historical release notes and receipts remain in `release/`.
+The release workflow is [`.github/workflows/publish.yml`](../../.github/workflows/publish.yml).
 
 Stage: alpha hardening of the narrow direct-compaction contract.
 

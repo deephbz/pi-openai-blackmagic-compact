@@ -16,10 +16,13 @@ With Blackmagic, it first derives the current branch through Pi's normal seriali
 
 ## Install and use
 
-The current source prepares `0.1.0-rc.12`. The prior `0.1.0-rc.11` release is documented in the [GitHub release](https://github.com/deephbz/pi-openai-blackmagic-compact/releases/tag/v0.1.0-rc.11). Install rc.12 or test a local checkout:
+Install an exact published version. The release workflow is
+[`.github/workflows/publish.yml`](.github/workflows/publish.yml); it validates
+an immutable version tag, verifies one packed artifact, scans it, and publishes
+that artifact with npm provenance.
 
 ```sh
-pi install npm:@hypercarrier/pi-openai-blackmagic-compact@0.1.0-rc.12
+pi install npm:@hypercarrier/pi-openai-blackmagic-compact@<version>
 # Or test a local checkout:
 pi -e /path/to/pi-openai-blackmagic-compact
 ```
