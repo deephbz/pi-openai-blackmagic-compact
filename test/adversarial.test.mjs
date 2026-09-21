@@ -313,6 +313,42 @@ test("same-route Codex and same-deployment Azure model aliases retain native rep
   ]);
 });
 
+test("lineage fallback reconstructs serializer drift from the active checkpoint parent", async () => {
+  const session = SessionManager.inMemory("/tmp");
+  const producer = nativeModel("openai", "gpt-5", "https://api.openai.com/v1", "openai-responses");
+  const firstKeptEntryId = session.appendMessage({ role: "user", content: [{ type: "text", text: "lineage source" }], timestamp: 1 });
+  session.appendMessage({ role: "assistant", content: [{ type: "text", text: "lineage answer" }], api: producer.api, provider: producer.provider, model: producer.id, usage: nativeUsage, stopReason: "stop", timestamp: 2 });
+  const pi = fakePi();
+  createServerCompactionController(pi, { fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({ output: [{ type: "compaction", encrypted_content: "lineage-opaque" }] }) }) });
+  const auth = { ok: true, apiKey: "synthetic-key" };
+  const context = { model: producer, modelRegistry: { getApiKeyAndHeaders: async () => auth }, sessionManager: session, getSystemPrompt: () => "lineage system", thinkingLevel: "high" };
+  const result = await pi.handlers.get("session_before_compact")({ preparation: nativePreparation(firstKeptEntryId), branchEntries: session.getBranch(), signal: new AbortController().signal }, context);
+  session.appendCompaction(result.compaction.summary, result.compaction.firstKeptEntryId, result.compaction.tokensBefore, result.compaction.details, true);
+  session.appendMessage({ role: "user", content: [{ type: "text", text: "lineage descendant" }], timestamp: 3 });
+  const payload = await captureNativeBody(producer, { systemPrompt: context.getSystemPrompt(), messages: convertToLlm(buildSessionContext(session.getBranch()).messages), tools: [] }, serializationOptions(context, auth, new AbortController().signal));
+  result.compaction.details.replay.replacedItemHashes = ["0".repeat(64)];
+  const replayed = await pi.handlers.get("before_provider_request")({ payload }, context);
+  assert.ok(replayed, "active Session lineage should permit serializer-drift replay");
+  assert.deepEqual(replayed.instructions, payload.instructions);
+  assert.deepEqual(replayed.tools, payload.tools);
+  assert.equal(replayed.input.some((item) => item.type === "compaction" && item.encrypted_content === "lineage-opaque"), true);
+  assert.equal(JSON.stringify(replayed.input).includes("lineage descendant"), true);
+
+  const invalidLineageCases = [
+    ["missing", (details) => { delete details.lineage; }],
+    ["inactive", (details) => { details.lineage.leafId = "inactive-parent"; }],
+    ["ambiguous", (details, branch) => { branch.push({ ...branch.find((entry) => entry.id === details.lineage.leafId) }); }],
+  ];
+  for (const [name, alter] of invalidLineageCases) {
+    const branch = structuredClone(session.getBranch());
+    const checkpoint = branch.find((entry) => entry.type === "compaction");
+    checkpoint.details.replay.replacedItemHashes = ["0".repeat(64)];
+    alter(checkpoint.details, branch);
+    const rejected = await pi.handlers.get("before_provider_request")({ payload }, { ...context, sessionManager: { ...session, getBranch: () => branch } });
+    assert.equal(rejected, undefined, `${name} lineage must fail closed`);
+  }
+});
+
 test("cross-model translation uses registered producer metadata and accepts direct proof when unavailable", async () => {
   const producer = nativeModel("openai", "gpt-5", "https://api.openai.com/v1", "openai-responses");
   producer.reasoning = true;

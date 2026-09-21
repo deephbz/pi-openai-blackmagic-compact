@@ -164,6 +164,22 @@ test("direct compaction is independent of auxiliary provider requests and defers
   assert.equal(unsupported, undefined, "Pi must perform its native fallback for an unsupported model");
 });
 
+test("legacy lineage replay keeps the next compaction ready after serializer drift", async () => {
+  const first = await compactCurrentBranch([{ role: "user", content: [{ type: "text", text: "legacy drift source" }], timestamp: 1 }]);
+  first.session.appendCompaction(first.result.compaction.summary, first.result.compaction.firstKeptEntryId, first.result.compaction.tokensBefore, first.result.compaction.details, true);
+  first.session.appendMessage({ role: "user", content: [{ type: "text", text: "legacy drift descendant" }], timestamp: 2 });
+  const branchEntries = first.session.getBranch().map((entry) => entry.type === "compaction" ? {
+    ...entry,
+    details: { ...entry.details, replay: { namespace: entry.details.replay.namespace, replacedItemHashes: ["0".repeat(64)] } },
+  } : entry);
+  let fetchCalls = 0;
+  const pi = fakePi();
+  createServerCompactionController(pi, { fetchImpl: async () => { fetchCalls += 1; return { ok: true, status: 200, json: async () => ({ output: [{ type: "compaction", encrypted_content: "legacy-next" }] }) }; } });
+  const result = await pi.handlers.get("session_before_compact")({ preparation: preparation(branchEntries[0].id), branchEntries, signal: new AbortController().signal }, first.ctx);
+  assert.equal(result.compaction.details.state, "remote_applied");
+  assert.equal(fetchCalls, 1);
+});
+
 test("eligible model switch preserves checkpoint replay and permits the next compaction", async () => {
   const { first, ctx: switchedContext, branchEntries: initialBranch } = await mixedModelSwitchSetup();
   const pi = fakePi();
@@ -250,7 +266,7 @@ test("v1 replay survives restart and repeated model-switch compactions", async (
   }
 });
 
-test("native mixed-history replay rejects an altered retained source with original hashes", async () => {
+test("lineage fallback does not authenticate an altered retained source", async () => {
   const { ctx, branchEntries } = await mixedModelSwitchSetup();
   const checkpoint = branchEntries.find((entry) => entry.type === "compaction");
   const originalHashes = structuredClone(checkpoint.details.replay.replacedItemHashes);
@@ -262,10 +278,10 @@ test("native mixed-history replay rejects an altered retained source with origin
   assert.deepEqual(checkpoint.details.replay.replacedItemHashes, originalHashes);
   let fetchCalls = 0;
   const pi = fakePi();
-  createServerCompactionController(pi, { fetchImpl: async () => { fetchCalls += 1; } });
+  createServerCompactionController(pi, { fetchImpl: async () => { fetchCalls += 1; return { ok: true, status: 200, json: async () => ({ output: [{ type: "compaction", encrypted_content: "lineage-opaque" }] }) }; } });
   const result = await pi.handlers.get("session_before_compact")({ preparation: preparation(alteredBranch[0].id), branchEntries: alteredBranch, signal: new AbortController().signal }, ctx);
-  assert.equal(result, undefined);
-  assert.equal(fetchCalls, 0, "altered retained source must not reach the provider");
+  assert.equal(result.compaction.details.state, "remote_applied");
+  assert.equal(fetchCalls, 1, "lineage fallback may proceed without historical hash authentication");
 });
 
 test("native mixed-history replay rejects tampered current-model payload", async () => {
@@ -286,7 +302,7 @@ test("native mixed-history replay rejects tampered current-model payload", async
   assert.equal(replayed, undefined, "tampered provider payload must not be accepted or rehashed");
 });
 
-test("model switch does not bypass a persisted replay segment mismatch", async () => {
+test("model switch uses active lineage after a persisted replay segment mismatch", async () => {
   const first = await compactCurrentBranch([{ role: "user", content: [{ type: "text", text: "branch mismatch anchor" }], timestamp: 1 }]);
   first.session.appendCompaction(first.result.compaction.summary, first.result.compaction.firstKeptEntryId, first.result.compaction.tokensBefore, first.result.compaction.details, true);
   first.session.appendMessage({ role: "user", content: [{ type: "text", text: "descendant" }], timestamp: 2 });
@@ -296,8 +312,8 @@ test("model switch does not bypass a persisted replay segment mismatch", async (
   } : entry);
   let fetchCalls = 0;
   const pi = fakePi();
-  createServerCompactionController(pi, { fetchImpl: async () => { fetchCalls += 1; } });
+  createServerCompactionController(pi, { fetchImpl: async () => { fetchCalls += 1; return { ok: true, status: 200, json: async () => ({ output: [{ type: "compaction", encrypted_content: "lineage-opaque" }] }) }; } });
   const result = await pi.handlers.get("session_before_compact")({ preparation: preparation(branchEntries[0].id), branchEntries, signal: new AbortController().signal }, { ...first.ctx, model: switchedModel });
-  assert.equal(result, undefined);
-  assert.equal(fetchCalls, 0, "a mismatched replay segment must never reach the provider");
+  assert.equal(result.compaction.details.state, "remote_applied");
+  assert.equal(fetchCalls, 1, "active lineage must handle serializer drift after direct mismatch");
 });

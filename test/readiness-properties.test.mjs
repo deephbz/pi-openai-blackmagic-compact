@@ -78,7 +78,7 @@ function nativeControlItem(providerPayload) {
 }
 function oracle(scenario, nativeEligible, contextEligible) {
   if (!nativeEligible || !contextEligible || scenario.route === "unsupported" || scenario.authMode !== "valid" || !scenario.systemPrompt) return false;
-  if (["tampered", "duplicate", "source-tampered", "artifact-hash-corrupt", "artifact-length-corrupt", "unknown-scope"].includes(scenario.checkpoint)) return false;
+  if (["tampered", "duplicate", "artifact-hash-corrupt", "artifact-length-corrupt", "unknown-scope"].includes(scenario.checkpoint)) return false;
   if (scenario.checkpoint === "switch-unavailable") return false;
   if (scenario.checkpoint !== "none" && !scenario.descendant) return false;
   return true;
@@ -219,7 +219,7 @@ async function runScenario(scenario, { remoteEnabled = true, verifyReplay = true
     const statusFetchCalls = fetchCalls.length - fetchBeforeStatus;
     const branchPreserved = JSON.stringify(session.getBranch()) === before;
     if (statusFetchCalls !== 0) throw new Error(`status performed provider egress: ${statusFetchCalls}`);
-    if (verifyReplay && observed && effective.checkpoint !== "none" && !["tampered", "duplicate", "source-tampered", "payload-tampered"].includes(effective.checkpoint)) {
+    if (verifyReplay && observed && effective.checkpoint !== "none" && !["tampered", "duplicate", "payload-tampered"].includes(effective.checkpoint)) {
       const currentPayload = await payload(context, current, session.getBranch(), auth, currentTools);
       const replayed = await pi.handlers.get("before_provider_request")({ payload: currentPayload }, context);
       assert.ok(replayed, "normal provider replay must succeed");

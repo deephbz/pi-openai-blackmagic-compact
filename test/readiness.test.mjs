@@ -217,6 +217,20 @@ test("status reports serialization unavailability instead of readiness", async (
   await assertBlocked(ctx, { reasonPattern: /serialization unavailable/i });
 });
 
+test("status accepts legacy lineage replay after serializer drift", async () => {
+  const identity = { surface: "openai_api", protocol: "responses_compact_v1", endpoint: "https://api.openai.com/v1", model: "gpt-5", api: "openai-responses" };
+  const details = checkpointDetails({ identity, opaqueWindow: [{ type: "compaction", encrypted_content: "legacy-opaque" }] });
+  details.replay = { namespace: "pi-openai-blackmagic-compact/1", replacedItemHashes: ["0".repeat(64)] };
+  const session = SessionManager.inMemory("/tmp");
+  const first = session.appendMessage({ role: "user", content: [{ type: "text", text: "legacy readiness source" }], timestamp: 1 });
+  session.appendCompaction("", first, 2, { ...details, lineage: { firstKeptEntryId: first, leafId: first } }, true);
+  session.appendMessage({ role: "user", content: [{ type: "text", text: "legacy readiness descendant" }], timestamp: 2 });
+  const result = await runStatus({ session, fetchImpl: async () => { throw new Error("status must not call provider"); } });
+  assert.equal(result.notices.length, 1);
+  assert.match(result.notices[0][0], /ready to attempt/i);
+  assert.equal(result.notices[0][1], "info");
+});
+
 test("status rejects a persisted checkpoint that no longer matches the active branch", async () => {
   const identity = { surface: "openai_api", protocol: "responses_compact_v1", endpoint: "https://api.openai.com/v1", model: "gpt-5", api: "openai-responses" };
   const details = checkpointDetails({ identity, opaqueWindow: [{ type: "compaction", encrypted_content: "opaque" }] });

@@ -44,22 +44,25 @@ endpoint, deployment, and API. It requires a supported namespace and one unique
 contiguous hash sequence within the recorded scope. New checkpoints use
 `replay.scope: "conversation"`. Replay replaces conversation items and preserves
 current request instructions and tools. An absent scope denotes legacy
-full-input hashes. Replay preserves legacy request-control items only after it
-proves the complete original span.
+full-input hashes for direct replay. A legacy checkpoint with persisted active
+lineage can use the lineage fallback after serializer drift. The fallback
+preserves current request controls and does not authenticate rewritten
+historical content.
 
 The checkpoint identity retains the producer model. An eligible model switch on
-the same route can replay directly when the stored hashes match. If serialization
-changes, replay serializes the active branch through the checkpoint under the
-producer model. It must reproduce the complete stored hash sequence within the
-recorded scope. It then serializes that prefix under the current model and
-replaces one unique matching conversation segment. Either failed proof blocks
-replay.
+the same route can replay directly when the stored hashes match. Exact hashes are
+always tried first. When serializer drift prevents old hashes from reproducing,
+replay uses the persisted active Session lineage as its fallback source authority.
+It rebuilds the checkpoint parent plus a synthetic pending compaction through the
+current serializer, then requires one unique matching live segment. This
+fallback does not authenticate manually rewritten historical content when old
+hashes cannot be reproduced.
 
 A malformed recognized checkpoint blocks readiness and direct remote compaction.
 This includes an invalid artifact hash or length and an unknown replay scope.
 Valid Pi-native and local-fallback summaries remain unaffected.
 
-Direct remote compaction failure can defer to Pi's native fallback. Replay acceptance does not guarantee server consumption or automatic retry after provider rejection.
+Direct remote compaction failure can defer to Pi's native fallback. Replay acceptance does not guarantee server consumption or automatic retry after provider rejection. Exact hashes remain the strongest replay proof. The lineage fallback still enforces artifact validation, route checks, active lineage, and unique-segment matching.
 
 The opaque provider artifact stays in typed `CompactionEntry.details`; a successful remote compaction writes an empty string to Pi's normal summary field. After a recognized extension compaction, one namespaced custom timeline entry stores only an allowlisted method label. Its parent is the compaction entry. Its expanded TUI view reads the saved checkpoint: it shows retained user messages in order and the exact first 100 characters of `encrypted_content` as the approved session-log search prefix. It does not read live replay input or guess from source history, duplicate payload data, or enter LLM context. Terminal controls are escaped, and narrow TUI wrapping can split copied prefix text. Forks before a checkpoint cannot replay it.
 
