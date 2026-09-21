@@ -227,7 +227,7 @@ async function readiness(session) {
   const before = session.sessionManager.getBranch().length;
   const notices = session.__readinessNotices ?? [];
   const start = notices.length;
-  await session.prompt("/blackmagic-status");
+  await session.prompt("/blackmagic status");
   const notice = notices.slice(start).at(-1);
   return {
     ready: typeof notice?.[0] === "string" && /ready to attempt/i.test(notice[0]),

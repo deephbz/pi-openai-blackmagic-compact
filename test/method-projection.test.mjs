@@ -27,7 +27,7 @@ test("status reports a concrete reason when the current branch has no context", 
   const pi = { on: (name, handler) => handlers.set(name, handler), registerCommand: (_name, value) => { command = value; }, registerEntryRenderer() {}, appendEntry() {} };
   createServerCompactionController(pi);
   const notices = []; const ctx = { hasUI: true, model: { provider: "openai", id: "gpt-5", baseUrl: "https://api.openai.com/v1", api: "openai-responses" }, sessionManager: { getBranch: () => [] }, ui: { notify: (...args) => notices.push(args) } };
-  await command.handler("", ctx);
+  await command.handler("status", ctx);
   assert.equal(notices.length, 1);
   assert.match(notices[0][0], /not ready/i);
   assert.match(notices[0][0], /current branch has no context/i);

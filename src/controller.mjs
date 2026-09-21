@@ -11,6 +11,13 @@ const DELEGATES = Object.freeze({
 });
 const REPLAY_NAMESPACE = "pi-openai-blackmagic-compact/1";
 const REPLAY_SCOPE = "conversation";
+const CONTROL_ENTRY_TYPE = "pi-openai-blackmagic-compact/control/1";
+const CONTROL_SCHEMA_VERSION = 1;
+const COMMANDS = [
+  { value: "status", label: "status", description: "Check remote compaction readiness" },
+  { value: "enable", label: "enable", description: "Allow new remote compaction attempts" },
+  { value: "disable", label: "disable", description: "Use native compaction for new attempts" },
+];
 class SerializationProbeComplete extends Error {}
 
 function extractPrepared(payload) {
@@ -127,6 +134,17 @@ async function replayCheckpoint(payload, checkpoint, identity, pi, ctx, auth, br
   if (currentSegment.length === 0) return undefined;
   return replaceConversationSegment(payload, currentSegment.map((item) => sha256(item)), checkpoint.details.checkpoint?.artifact);
 }
+function readRemoteCompactionPreference(session) {
+  let enabled = true;
+  let entries;
+  try { entries = session?.getEntries?.(); } catch { entries = undefined; }
+  if (!Array.isArray(entries)) return enabled;
+  for (const entry of entries) {
+    const data = entry?.type === "custom" && entry.customType === CONTROL_ENTRY_TYPE ? entry.data : undefined;
+    if (data?.schemaVersion === CONTROL_SCHEMA_VERSION && typeof data.enabled === "boolean") enabled = data.enabled;
+  }
+  return enabled;
+}
 function activeTools(pi) {
   if (typeof pi?.getActiveTools !== "function" || typeof pi?.getAllTools !== "function") throw new Error("Pi tool access is unavailable");
   const names = new Set(pi.getActiveTools());
@@ -242,7 +260,19 @@ export function createServerCompactionController(pi, options = {}) {
   const appendedCompactions = new Set();
   let sessionManager;
 
-  pi.on("session_start", (_event, ctx) => { sessionManager = ctx.sessionManager; });
+  let remoteCompactionEnabled = true;
+  const adoptSession = (manager) => {
+    if (!manager || manager === sessionManager) return;
+    sessionManager = manager;
+    remoteCompactionEnabled = readRemoteCompactionPreference(manager);
+  };
+  const notify = (ctx, text, level) => {
+    if (ctx?.hasUI && typeof ctx.ui?.notify === "function") ctx.ui.notify(text, level);
+  };
+  const usage = (ctx) => notify(ctx, "Usage: /blackmagic status|enable|disable", "warning");
+  const disabledStatus = "Blackmagic remote compaction: disabled — Pi native compaction is active; persisted replay remains active.";
+
+  pi.on("session_start", (_event, ctx) => { sessionManager = ctx.sessionManager; remoteCompactionEnabled = readRemoteCompactionPreference(sessionManager); });
   pi.registerEntryRenderer(COMPACTION_TIMELINE_ENTRY_TYPE, (entry, options, theme) => {
     const label = compactionTimelineLabel(entry.data);
     if (!label) return undefined;
@@ -299,6 +329,9 @@ export function createServerCompactionController(pi, options = {}) {
     return replayed;
   });
   pi.on("session_before_compact", async (event, ctx) => {
+    adoptSession(ctx?.sessionManager);
+    const remoteEnabledAtEntry = remoteCompactionEnabled;
+    if (!remoteEnabledAtEntry) return undefined;
     const model = ctx?.model;
     const canResolveAuth = model && typeof ctx?.modelRegistry?.getApiKeyAndHeaders === "function";
     if (!canResolveAuth) return undefined;
@@ -314,25 +347,64 @@ export function createServerCompactionController(pi, options = {}) {
     emit("remote_applied", { identity, ...result.details, checkpoint: result.details.checkpoint });
     return { compaction: { summary: "", firstKeptEntryId: event.preparation.firstKeptEntryId, tokensBefore: event.preparation.tokensBefore, details: result.details } };
   });
-  pi.registerCommand("blackmagic-status", { description: "Check whether /compact can use Blackmagic remote compaction.", handler: async (args, ctx) => {
-    if (typeof args === "string" && args.trim()) {
-      if (ctx?.hasUI && typeof ctx.ui?.notify === "function") ctx.ui.notify("Usage: /blackmagic-status", "warning");
-      return;
-    }
-    const model = ctx?.model;
-    let auth;
-    try {
-      const canResolveAuth = model && typeof ctx?.modelRegistry?.getApiKeyAndHeaders === "function";
-      auth = canResolveAuth ? await ctx.modelRegistry.getApiKeyAndHeaders(model) : undefined;
-    } catch { auth = undefined; }
-    let preflight;
-    if (ctx?.model !== model) preflight = { failure: "current model changed during readiness check; run /blackmagic-status again" };
-    else {
-      let branchEntries;
-      try { branchEntries = ctx?.sessionManager?.getBranch?.() ?? []; } catch { branchEntries = undefined; }
-      preflight = branchEntries ? await preflightCompaction(pi, { branchEntries }, ctx, auth, { model }) : { failure: "current branch unavailable" };
-    }
-    const text = preflight.failure ? `Blackmagic remote compaction: not ready — ${preflight.failure}.` : "Blackmagic remote compaction: ready to attempt with /compact.";
-    if (ctx?.hasUI && typeof ctx.ui?.notify === "function") ctx.ui.notify(text, preflight.failure ? "warning" : "info");
-  } });
+  pi.registerCommand("blackmagic", {
+    description: "Control and check whether /compact can use Blackmagic remote compaction: status, enable, or disable.",
+    getArgumentCompletions: (prefix) => {
+      const text = String(prefix ?? "");
+      if (/\s/.test(text)) return null;
+      const items = COMMANDS.filter((command) => command.value.startsWith(text));
+      return items.length > 0 ? items : null;
+    },
+    handler: async (args, ctx) => {
+      const command = typeof args === "string" ? args.trim() : "";
+      if (!COMMANDS.some((item) => item.value === command)) {
+        usage(ctx);
+        return;
+      }
+      adoptSession(ctx?.sessionManager);
+      if (command === "enable" || command === "disable") {
+        const enabled = command === "enable";
+        if (remoteCompactionEnabled === enabled) {
+          notify(ctx, `Blackmagic remote compaction is already ${enabled ? "enabled" : "disabled"}; persisted replay remains active.`, "info");
+          return;
+        }
+        try {
+          if (typeof pi.appendEntry !== "function") throw new Error("session persistence unavailable");
+          pi.appendEntry(CONTROL_ENTRY_TYPE, { schemaVersion: CONTROL_SCHEMA_VERSION, enabled });
+        } catch {
+          notify(ctx, `Blackmagic remote compaction remains ${remoteCompactionEnabled ? "enabled" : "disabled"}; the Session preference could not be saved.`, "warning");
+          return;
+        }
+        remoteCompactionEnabled = enabled;
+        notify(ctx, `Blackmagic remote compaction is now ${enabled ? "enabled" : "disabled"}; persisted replay remains active.`, "info");
+        return;
+      }
+      const enabledAtStart = remoteCompactionEnabled;
+      if (!enabledAtStart) {
+        notify(ctx, disabledStatus, "info");
+        return;
+      }
+      const model = ctx?.model;
+      let auth;
+      try {
+        const canResolveAuth = model && typeof ctx?.modelRegistry?.getApiKeyAndHeaders === "function";
+        auth = canResolveAuth ? await ctx.modelRegistry.getApiKeyAndHeaders(model) : undefined;
+      } catch { auth = undefined; }
+      let preflight;
+      if (ctx?.model !== model) preflight = { failure: "current model changed during readiness check; run /blackmagic status again" };
+      else {
+        let branchEntries;
+        try { branchEntries = ctx?.sessionManager?.getBranch?.() ?? []; } catch { branchEntries = undefined; }
+        preflight = branchEntries ? await preflightCompaction(pi, { branchEntries }, ctx, auth, { model }) : { failure: "current branch unavailable" };
+      }
+      if (!remoteCompactionEnabled) {
+        notify(ctx, disabledStatus, "info");
+        return;
+      }
+      const text = preflight.failure
+        ? `Blackmagic remote compaction: enabled — not ready — ${preflight.failure}.`
+        : "Blackmagic remote compaction: enabled — ready to attempt with /compact.";
+      notify(ctx, text, preflight.failure ? "warning" : "info");
+    },
+  });
 }

@@ -60,7 +60,7 @@ function statusContext({ model, session, auth, onAuth } = {}) {
   };
 }
 
-async function runStatusContext(ctx, { fetchImpl, args = "" } = {}) {
+async function runStatusContext(ctx, { fetchImpl, args = "status" } = {}) {
   const pi = fakePi();
   createServerCompactionController(pi, { fetchImpl });
   const notices = [];
@@ -68,7 +68,7 @@ async function runStatusContext(ctx, { fetchImpl, args = "" } = {}) {
   await pi.command.handler(args, ctx);
   return { notices, session: ctx.sessionManager, pi };
 }
-async function runStatus({ model, session, auth, onAuth, fetchImpl, args = "" } = {}) {
+async function runStatus({ model, session, auth, onAuth, fetchImpl, args = "status" } = {}) {
   return runStatusContext(statusContext({ model, session, auth, onAuth }), { fetchImpl, args });
 }
 
@@ -79,7 +79,7 @@ test("status reports readiness once without provider egress or session mutation"
   const before = JSON.stringify(session.getBranch());
   const result = await runStatus({ session, fetchImpl: async () => { fetchCalls += 1; } , onAuth: () => { authCalls += 1; } });
   assert.equal(result.notices.length, 1);
-  assert.match(result.notices[0][0], /^Blackmagic remote compaction: ready to attempt/i);
+  assert.match(result.notices[0][0], /^Blackmagic remote compaction: enabled — ready to attempt/i);
   assert.equal(result.notices[0][1], "info");
   assert.equal(authCalls, 1);
   assert.equal(fetchCalls, 0, "readiness must not call the compaction endpoint");
@@ -123,7 +123,7 @@ test("status gives one actionable usage error for invalid arguments", async () =
   assert.equal(result.notices.length, 1);
   assert.equal(result.notices[0][1], "warning");
   assert.match(result.notices[0][0], /usage/i);
-  assert.match(result.notices[0][0], /blackmagic-status/);
+  assert.match(result.notices[0][0], /blackmagic status/);
 });
 
 test("status is not ready when the current model changes during authorization", async () => {
@@ -142,7 +142,7 @@ test("status is not ready when the current model changes during authorization", 
     return { ok: true, apiKey: "synthetic-key" };
   };
   ctx.ui.notify = (...notice) => notices.push(notice);
-  const pending = pi.command.handler("", ctx);
+  const pending = pi.command.handler("status", ctx);
   ctx.model = azureModel;
   releaseAuth();
   await pending;
@@ -246,10 +246,10 @@ test("status validates the argument before any authorization lookup", async () =
   let authCalls = 0;
   let fetchCalls = 0;
   const ctx = statusContext({ onAuth: () => { authCalls += 1; } });
-  const result = await runStatusContext(ctx, { args: "status", fetchImpl: async () => { fetchCalls += 1; } });
+  const result = await runStatusContext(ctx, { args: "status extra", fetchImpl: async () => { fetchCalls += 1; } });
   assert.equal(result.notices.length, 1);
   assert.equal(result.notices[0][1], "warning");
-  assert.match(result.notices[0][0], /usage: \/blackmagic-status/i);
+  assert.match(result.notices[0][0], /usage: \/blackmagic status/i);
   assert.equal(authCalls, 0);
   assert.equal(fetchCalls, 0);
 });
@@ -263,11 +263,20 @@ test("status never echoes rejected Codex credential material", async () => {
   assert.doesNotMatch(result.notices[0][0], /secret-material|acct-never-print|signature/);
 });
 
-test("the controller registers only the readiness command with a truthful description", () => {
+test("the controller registers only the readiness command with completion", () => {
   const pi = fakePi();
   createServerCompactionController(pi);
-  assert.deepEqual(pi.commands, ["blackmagic-status"]);
-  assert.doesNotMatch(JSON.stringify(pi.commands), /server-compact/);
+  assert.deepEqual(pi.commands, ["blackmagic"]);
+  assert.doesNotMatch(JSON.stringify(pi.commands), /server-compact|blackmagic-status/);
+  assert.deepEqual(pi.command.getArgumentCompletions(""), [
+    { value: "status", label: "status", description: "Check remote compaction readiness" },
+    { value: "enable", label: "enable", description: "Allow new remote compaction attempts" },
+    { value: "disable", label: "disable", description: "Use native compaction for new attempts" },
+  ]);
+  assert.deepEqual(pi.command.getArgumentCompletions("sta"), [{ value: "status", label: "status", description: "Check remote compaction readiness" }]);
+  assert.equal(pi.command.getArgumentCompletions("status "), null);
+  assert.equal(pi.command.getArgumentCompletions("status extra"), null);
+  assert.equal(pi.command.getArgumentCompletions("unknown"), null);
   assert.match(pi.command.description, /\/compact/);
   assert.match(pi.command.description, /Blackmagic remote compaction/);
 });

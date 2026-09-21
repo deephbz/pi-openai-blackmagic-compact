@@ -213,9 +213,9 @@ async function runScenario(scenario, { remoteEnabled = true, verifyReplay = true
     const before = JSON.stringify(session.getBranch());
     const notices = []; context.ui.notify = (...notice) => notices.push(notice);
     const fetchBeforeStatus = fetchCalls.length;
-    await pi.command.handler("", context);
+    await pi.command.handler("status", context);
     const statusText = notices.at(-1)?.[0] ?? "";
-    const observed = /^Blackmagic remote compaction: ready to attempt/i.test(statusText);
+    const observed = /^Blackmagic remote compaction: enabled — ready to attempt/i.test(statusText);
     const statusFetchCalls = fetchCalls.length - fetchBeforeStatus;
     const branchPreserved = JSON.stringify(session.getBranch()) === before;
     if (statusFetchCalls !== 0) throw new Error(`status performed provider egress: ${statusFetchCalls}`);
@@ -253,7 +253,7 @@ async function runScenario(scenario, { remoteEnabled = true, verifyReplay = true
         const repeatPreparation = prep(repeatBranch, settings);
         const repeatNotices = [];
         context.ui.notify = (...notice) => repeatNotices.push(notice);
-        await pi.command.handler("", context);
+        await pi.command.handler("status", context);
         assert.match(repeatNotices.at(-1)?.[0] ?? "", /ready to attempt/i, "repeated readiness failed");
         const repeatResult = await pi.handlers.get("session_before_compact")({ preparation: repeatPreparation, branchEntries: repeatBranch, signal: new AbortController().signal }, context);
         assert.equal(repeatResult?.compaction?.details?.state, "remote_applied", "repeated compaction failed");
