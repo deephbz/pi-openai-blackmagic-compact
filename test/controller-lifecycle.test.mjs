@@ -129,6 +129,33 @@ test("timeline entries append once after recognized extension compaction only", 
   assert.equal(renderer({ data: { method: "secret-model" } }, {}, { bg: (_key, text) => text, fg: (_key, text) => text }), undefined);
 });
 
+test("timeline ownership follows the current Session leaf and rejects native leaves", () => {
+  const remote = (surface, protocol) => ({ schemaVersion: 1, state: "remote_applied", identity: { surface, protocol } });
+  const stale = { id: "stale", type: "compaction", details: remote("openai_api", "responses_compact_v1") };
+  const current = { id: "current", type: "compaction", details: remote("chatgpt_codex", "codex_compaction_trigger_v2") };
+  const session = { getLeafId: () => current.id, getBranch: () => [stale, current] };
+  const pi = fakePi();
+  createServerCompactionController(pi);
+  const compact = pi.handlers.get("session_compact");
+  compact({ compactionEntry: stale, fromExtension: true }, { sessionManager: session });
+  compact({ compactionEntry: stale, fromExtension: true }, { sessionManager: session });
+  assert.deepEqual(pi.appended, [{ type: "pi-openai-blackmagic-compact/compaction-timeline/1", data: { method: "remote_codex_v2" } }]);
+
+  const fallbackPi = fakePi();
+  createServerCompactionController(fallbackPi);
+  const fallback = fallbackPi.handlers.get("session_compact");
+  fallback({ compactionEntry: stale, fromExtension: true }, { sessionManager: { getLeafId: () => "message", getBranch: () => [{ id: "message", type: "message" }] } });
+  assert.deepEqual(fallbackPi.appended[0].data, { method: "remote_responses_v1" });
+
+  for (const details of [{ schemaVersion: 1, state: "native" }, { schemaVersion: 1, state: "remote_applied", identity: { surface: "unsupported", protocol: "unsupported" } }]) {
+    const leaf = { id: "blocked", type: "compaction", details };
+    const blockedPi = fakePi();
+    createServerCompactionController(blockedPi);
+    blockedPi.handlers.get("session_compact")({ compactionEntry: stale, fromExtension: true }, { sessionManager: { getLeafId: () => leaf.id, getBranch: () => [stale, leaf] } });
+    assert.deepEqual(blockedPi.appended, []);
+  }
+});
+
 test("remote timeline expands the saved checkpoint without a second summary", () => {
   const session = SessionManager.inMemory("/tmp");
   const anchor = session.appendMessage({ role: "user", content: [{ type: "text", text: "anchor" }], timestamp: 1 });

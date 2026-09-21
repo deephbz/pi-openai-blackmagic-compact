@@ -269,8 +269,15 @@ export function createServerCompactionController(pi, options = {}) {
   });
   pi.on("session_compact", (event, ctx) => {
     sessionManager = ctx?.sessionManager ?? sessionManager;
-    const data = event?.fromExtension && compactionTimelineData(event.compactionEntry);
-    const id = event?.compactionEntry?.id;
+    let leaf;
+    try {
+      const leafId = sessionManager?.getLeafId?.();
+      const branch = sessionManager?.getBranch?.();
+      leaf = Array.isArray(branch) ? branch.find((entry) => entry?.id === leafId) : undefined;
+    } catch { leaf = undefined; }
+    const compactionEntry = leaf?.type === "compaction" ? leaf : event?.compactionEntry;
+    const data = event?.fromExtension && compactionTimelineData(compactionEntry);
+    const id = compactionEntry?.id;
     if (!data || !id || appendedCompactions.has(id)) return;
     appendedCompactions.add(id);
     pi.appendEntry(COMPACTION_TIMELINE_ENTRY_TYPE, data);
