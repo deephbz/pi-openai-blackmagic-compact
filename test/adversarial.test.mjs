@@ -63,6 +63,54 @@ const prepared = {
   input: [{ role: "user", content: "old" }, { type: "reasoning", encrypted_content: "opaque-reasoning" }, { role: "assistant", content: "latest" }],
 };
 
+test("generic GPT-5 and GPT-6 routes reuse the Responses adapter", async () => {
+  const cases = [
+    { provider: "synthetic-a", baseUrl: "https://gateway.example", model: "@azure/gpt-5" },
+    { provider: "synthetic-b", baseUrl: "https://gateway.example/prefix/v1", model: "@bedrock-mantle-usw2/openai.gpt-6-astra" },
+    { provider: "synthetic-c", baseUrl: "https://other.example/api/responses", model: "provider/GPT-5.6-custom" },
+  ];
+  for (const scenario of cases) {
+    const identity = identifySurface({ api: "openai-responses", ...scenario });
+    assert.equal(identity.kind, "supported");
+    assert.equal(identity.surface, "openai_api");
+    let request;
+    const result = await compactProviderInput({
+      identity,
+      prepared,
+      auth: { apiKey: "synthetic-key" },
+      fetchImpl: async (url, options) => {
+        request = { url, headers: options.headers, body: JSON.parse(options.body) };
+        return { ok: true, status: 200, json: async () => ({ output: [{ type: "compaction", encrypted_content: "synthetic-opaque" }] }) };
+      },
+    });
+    assert.ok(result.details, result.error?.message);
+    assert.equal(request.url, `${identity.endpoint}/responses/compact`);
+    assert.equal(request.headers.authorization, "Bearer synthetic-key");
+    assert.equal(request.body.model, scenario.model);
+    assert.deepEqual(result.details.identity, identity);
+  }
+});
+
+test("generic GPT route rejects HTTP, wrong API, GPT-4, and Claude models", () => {
+  const base = { provider: "synthetic", api: "openai-responses", model: "gpt-5" };
+  for (const candidate of [
+    { ...base, baseUrl: "http://gateway.example/prefix" },
+    { ...base, api: "openai-chat", baseUrl: "https://gateway.example/prefix" },
+    { ...base, model: "gpt-4.1", baseUrl: "https://gateway.example/prefix" },
+    { ...base, model: "claude-sonnet", baseUrl: "https://gateway.example/prefix" },
+  ]) assert.equal(identifySurface(candidate).kind, "unsupported", JSON.stringify(candidate));
+});
+
+test("generic route replay rejects a changed endpoint", async () => {
+  const checkpointIdentity = identifySurface({ provider: "synthetic", api: "openai-responses", baseUrl: "https://gateway-a.example/prefix", model: "gpt-6" });
+  const result = await replayWithCurrentModel({
+    checkpointIdentity,
+    currentModel: { provider: "synthetic", id: "gpt-6", baseUrl: "https://gateway-b.example/prefix", api: "openai-responses" },
+  });
+  assert.equal(result.replayed, undefined);
+  assert.ok(result.telemetry.some((event) => event.failureClass === "identity_mismatch"));
+});
+
 test("provider compaction interface rejects an identity without one matching adapter", async () => {
   let fetchCalls = 0;
   const result = await compactProviderInput({

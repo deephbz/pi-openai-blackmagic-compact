@@ -51,7 +51,7 @@ function baseModel(route, switchModel, metadataDiffers) {
 function authFor(scenario, producer, current) {
   if (scenario.authMode === "missing") return undefined;
   if (scenario.authMode === "failed") return { ok: false, apiKey: "synthetic-key" };
-  if (scenario.authMode === "bad-route") return scenario.route === "azure" ? { ok: true, apiKey: "synthetic-key", env: { AZURE_OPENAI_BASE_URL: "https://proxy.invalid/openai/v1" } } : { ok: true, apiKey: "synthetic-key", env: { OPENAI_BASE_URL: "https://proxy.invalid/v1" } };
+  if (scenario.authMode === "bad-route") return scenario.route === "azure" ? { ok: true, apiKey: "synthetic-key", env: { AZURE_OPENAI_BASE_URL: "https://proxy.invalid/openai/v1" } } : { ok: true, apiKey: "synthetic-key", env: { OPENAI_BASE_URL: "http://proxy.invalid/v1" } };
   if (scenario.route === "codex") return { ok: true, apiKey: codexToken() };
   if (scenario.route === "azure") return { ok: true, apiKey: "synthetic-key", env: { AZURE_OPENAI_DEPLOYMENT_NAME_MAP: `${producer.id}=deployment-a,${current.id}=deployment-a` } };
   return { ok: true, apiKey: "synthetic-key" };

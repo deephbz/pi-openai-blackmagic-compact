@@ -187,7 +187,7 @@ test("direct compaction is independent of auxiliary provider requests and defers
   const { result, pi, ctx } = await compactCurrentBranch([entry]);
   assert.equal(result.compaction.details.state, "remote_applied");
   assert.equal(pi.handlers.has("message_end"), false);
-  const unsupported = await pi.handlers.get("session_before_compact")({ preparation: preparation("x"), branchEntries: [], signal: new AbortController().signal }, { ...ctx, model: { ...model, baseUrl: "https://proxy.invalid/v1" } });
+  const unsupported = await pi.handlers.get("session_before_compact")({ preparation: preparation("x"), branchEntries: [], signal: new AbortController().signal }, { ...ctx, model: { ...model, api: "unsupported-api", baseUrl: "https://proxy.invalid/v1" } });
   assert.equal(unsupported, undefined, "Pi must perform its native fallback for an unsupported model");
 });
 

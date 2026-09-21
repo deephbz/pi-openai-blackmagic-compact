@@ -1,14 +1,13 @@
 # Pi OpenAI Blackmagic Compact — current state
 
-As of: 2026-09-15
+As of: 2026-09-21
 
-Published release line: `0.1.0-rc.9`. This candidate prepares
-`0.1.0-rc.10` for the `next` dist-tag; published `latest` remains unchanged.
+Source base: `0.1.0-rc.10`. Package version and publication remain unchanged.
 
-Unreleased candidate changes: eligible model switches can reuse checkpoints
-within the same approved provider route. Conversation-scoped replay preserves
-current instructions and tools. Invalid recognized checkpoints block remote
-readiness. Public notes: [rc.10 release notes](../../release/v0.1.0-rc.10-release-notes.md).
+Unreleased changes: serializer-drift lineage fallback serves provider requests
+and compaction preflight. Timeline cards prefer the current Session compaction
+leaf. Route recognition accepts configured HTTPS GPT-5/GPT-6 Responses endpoints.
+Earlier release notes: [rc.10](../../release/v0.1.0-rc.10-release-notes.md).
 
 Publication evidence lives in repository release receipts. The
 [rc.8 release receipt](../../release/v0.1.0-rc.8-release-receipt.md) records the
@@ -20,7 +19,7 @@ Compatibility: Pi peers support version 0.83.0 or later, with no upper bound. No
 
 ## Purpose and boundary
 
-This hook-only package compacts the authoritative current Pi branch on official OpenAI Responses, official Azure OpenAI Responses, and ChatGPT Codex Responses. After a validated remote result, it writes an empty Pi summary and adds an opaque provider checkpoint.
+This hook-only package compacts the authoritative current Pi branch on approved OpenAI Responses, Azure OpenAI Responses, ChatGPT Codex Responses, and configured HTTPS Responses endpoints with the exact `openai-responses` API and case-insensitive `gpt-5` or `gpt-6` model IDs. The adapter appends `/responses/compact` to the configured base path. It discards query strings and fragments from both the request URL and endpoint identity. Query-based routing is unsupported. Recognition permits an attempt and does not validate transport compatibility. After a validated remote result, it writes an empty Pi summary and adds an opaque provider checkpoint.
 
 The package has no extension configuration. It does not register or wrap providers, observe normal provider requests, own thresholds, or create handoffs. Payload-only request rewrites are outside the compaction source because they are not persisted Pi Session history.
 
@@ -28,7 +27,7 @@ The package has no extension configuration. It does not register or wrap provide
 
 At `session_before_compact`, the package derives AgentMessages from `buildSessionContext(event.branchEntries)`, converts them through Pi `convertToLlm()`, filters the current Pi tool definitions by active tool names, and uses the unmodified Pi-AI Responses `streamSimple` delegate with a deliberately terminated `onPayload` probe. This captures one native semantic request body without a network request or native compaction call.
 
-The probe receives the current system prompt, thinking level, session ID, authorization, and stable serializer options. The package identifies the exact approved surface, applies a matching active checkpoint replay to the derived body when present, and calls the matching compact protocol. A validated result persists an empty summary with its checkpoint. Failure to serialize, authenticate, match replay, compact, or serialize the post-compaction segment returns no hook result, so Pi performs its normal native compaction.
+The probe receives the current system prompt, thinking level, session ID, authorization, and stable serializer options. The package identifies the exact approved surface, applies a matching active checkpoint replay to the derived body when present, and calls the matching compact protocol. Generic GPT routes reuse the OpenAI Responses adapter and keep their normalized endpoint in checkpoint identity. A validated result persists an empty summary with its checkpoint. Failure to serialize, authenticate, match replay, compact, or serialize the post-compaction segment returns no hook result, so Pi performs its normal native compaction.
 
 Normal `before_provider_request` only replays an active persisted checkpoint or records its invalidation. It does not affect compaction readiness. `/blackmagic-status` uses a no-provider-compaction preflight over the active branch and current model route. It reports concrete route blockers such as a missing model, invalid endpoint, non-HTTPS endpoint, or unsupported provider route. It rejects an empty branch, a branch without context, and a branch that already ends with compaction. It resolves authorization through Pi's normal `getApiKeyAndHeaders` resolver, which may refresh auth or use configured auth storage. Codex readiness also validates the account identity required by its transport. The command accepts no argument. It does not call the compaction endpoint or make a model request. It reports readiness for an attempt, not future success, in one transient notice and does not set persistent footer state.
 
@@ -74,11 +73,15 @@ Old tag graphs remain public and are not privacy-clean. Old releases remain immu
 
 ## Evidence
 
-- The rc.10 candidate suite passes locally, including the unbounded Pi peer-range release contract.
+- The locked Pi 0.83.0 suite passes all 92 tests. Package verification passes.
+- The earlier Pi 0.85.1 comparison retained the base revision's 12
+  readiness-property failures. Pi 0.86.1 retained its 16 serializer/readiness
+  failures. Those comparisons covered the prior 91-test tip; the unbounded
+  peer range does not establish runtime compatibility for this amendment.
 - The rc.8 OIDC publish run `31930165211` passed from exact `main` source.
   Its receipt records verified registry integrity and SLSA provenance.
 - Unit and lifecycle tests cover all three protocol adapters and direct current-branch serialization.
 - The serialization corpus includes custom messages, branch and compaction summaries, included and excluded bash messages, assistant tool calls, and tool results.
 - Tests cover checkpoint replay, same-route model-switch translation, saved-checkpoint projection, restart and fork boundaries, redacted telemetry, package contents, and RPC loading from another directory.
 - Cross-model replay passes deterministic tests. An [authenticated Pi 0.85.1 canary](../../release/v0.1.0-rc.10-authenticated-canary.md) verifies fresh-process Codex replay from `gpt-5.6-luna` to `gpt-5.6-sol` with no plaintext nonce in the replay request. Other pairs remain unverified.
-- Official OpenAI and Azure authenticated canaries remain live-unverified. Pi native compaction remains the fallback when remote compaction cannot produce a validated checkpoint.
+- Official OpenAI and Azure authenticated canaries remain live-unverified. Generic endpoint live acceptance remains unverified. Pi native compaction remains the fallback when remote compaction cannot produce a validated checkpoint.

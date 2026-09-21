@@ -2,7 +2,7 @@
 
 Direct server compaction for the Pi branch you are using now.
 
-Blackmagic keeps Pi in charge of the Session change. When one of three approved OpenAI-family surfaces validates a remote compaction, it writes an empty Pi summary and adds one provider checkpoint. When it cannot, Pi makes its normal local summary. No ceremony. No provider wrapper. No extension configuration.
+Blackmagic keeps Pi in charge of the Session change. When an approved OpenAI-family surface validates a remote compaction, it writes an empty Pi summary and adds one provider checkpoint. When it cannot, Pi makes its normal local summary. No ceremony. No provider wrapper. No extension configuration.
 
 For the full current contract, see [docs/current/README.md](docs/current/README.md).
 
@@ -16,8 +16,7 @@ With Blackmagic, it first derives the current branch through Pi's normal seriali
 
 ## Install and use
 
-Version `0.1.0-rc.10` contains the replay/readiness fixes. See the
-[rc.10 release notes](release/v0.1.0-rc.10-release-notes.md).
+The current checkout contains unreleased changes after `0.1.0-rc.10`, including replay drift fallback, Session-leaf timeline ownership, and generalized GPT-5/GPT-6 route recognition. The install command below remains the published rc.10 baseline and does not contain these changes. See the [rc.10 release notes](release/v0.1.0-rc.10-release-notes.md).
 
 ```sh
 pi install npm:@hypercarrier/pi-openai-blackmagic-compact@0.1.0-rc.10
@@ -50,13 +49,14 @@ Known limits:
 
 ## Supported surfaces
 
-Blackmagic accepts only these official Responses surfaces:
+Blackmagic accepts only these approved Responses surfaces:
 
 - OpenAI Responses
 - Azure OpenAI Responses
 - ChatGPT Codex Responses
+- Any configured HTTPS Responses endpoint with the exact `openai-responses` API and a model ID containing `gpt-5` or `gpt-6` (case-insensitive)
 
-It does not claim general provider support. Other models and unsupported conditions use Pi's local fallback.
+Generic GPT route recognition reuses the OpenAI Responses adapter. It permits an attempt; it does not prove provider support, response semantics, compaction quality, or safe data handling. Other models and unsupported conditions use Pi's local fallback.
 
 ## What you see
 
@@ -70,7 +70,7 @@ The card can also show Codex v2 or a local fallback with an allowlisted failure 
 
 ## How it works
 
-During `session_before_compact`, Blackmagic derives the authoritative current branch with Pi's canonical conversion and native serializer. It uses that result for an approved server compaction attempt without calling Pi's native compaction model.
+During `session_before_compact`, Blackmagic derives the authoritative current branch with Pi's canonical conversion and native serializer. It uses that result for an approved server compaction attempt without calling Pi's native compaction model. Generic route recognition requires HTTPS, the exact OpenAI Responses API, and a GPT-5 or GPT-6 model ID.
 
 Pi then owns and persists the returned atomic Session mutation. On remote success, its summary is the empty string and the package stores one opaque provider window in normal compaction details. Later requests can replay that checkpoint when the active branch and supported route identity match, including an eligible model switch. The checkpoint retains its producer model and uses exact stored hashes for direct replay. When serializer drift prevents old hashes from reproducing, it can rebuild the checkpoint parent plus a synthetic pending compaction through the current serializer. This fallback requires the persisted checkpoint lineage to remain active and one current serialized segment to match. It uses the active Session lineage as its source authority. It does not authenticate manually rewritten historical content when old hashes cannot be reproduced. New checkpoints separate conversation replay from current request instructions and tools. Legacy checkpoints use full-input hashes for direct replay. Legacy checkpoints with persisted active lineage can use the same lineage fallback after serializer drift; that fallback preserves current controls but does not authenticate rewritten historical content. The [authenticated canary](release/v0.1.0-rc.10-authenticated-canary.md) verifies one Codex model pair; other pairs remain unverified. A provider rejection does not trigger an automatic retry. The timeline card follows `session_compact` as a separate TUI-only custom entry.
 
@@ -93,7 +93,7 @@ Session data can contain opaque provider artifacts. Treat the session file as se
 
 ## Limits
 
-This package is not a promise of lossless compaction or identical provider transport. It supports only the listed surfaces. Exact replay hashes remain the strongest replay proof. Serializer-drift fallback trusts active persisted Session lineage and does not prove that historical content was not manually rewritten when old hashes cannot be reproduced. It still requires artifact validation, route checks, active lineage, and one unique live segment. It has authenticated Codex evidence, but OpenAI and Azure live canaries are still blocked by missing credentials. Pi's native compaction remains the dependable fallback when a remote result is unavailable.
+This package is not a promise of lossless compaction or identical provider transport. It supports only the listed surfaces. Generic GPT route recognition can send prompts, tools, and credentials to any configured HTTPS endpoint that matches the rule. Exact replay hashes remain the strongest replay proof. Serializer-drift fallback trusts active persisted Session lineage and does not prove that historical content was not manually rewritten when old hashes cannot be reproduced. It still requires artifact validation, route checks, active lineage, and one unique live segment. It has authenticated Codex evidence, but OpenAI and Azure live canaries are still blocked by missing credentials. Generic endpoint live acceptance remains unverified. Pi's native compaction remains the dependable fallback when a remote result is unavailable.
 
 ## Verify
 
