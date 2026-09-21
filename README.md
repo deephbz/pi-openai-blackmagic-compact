@@ -2,7 +2,7 @@
 
 Direct server compaction for the Pi branch you are using now.
 
-Blackmagic keeps Pi in charge of the Session change. When an approved OpenAI-family surface validates a remote compaction, it writes an empty Pi summary and adds one provider checkpoint. When it cannot, Pi makes its normal local summary. No ceremony. No provider wrapper. No extension configuration.
+Blackmagic keeps Pi in charge of the Session change. When an approved OpenAI-family surface validates a remote compaction, it writes an empty Pi summary and adds one provider checkpoint. When it cannot, Pi makes its normal local summary. No ceremony. No provider wrapper. No separate configuration file.
 
 For the full current contract, see [docs/current/README.md](docs/current/README.md).
 
@@ -24,15 +24,17 @@ pi install npm:@hypercarrier/pi-openai-blackmagic-compact@0.1.0-rc.10
 pi -e /path/to/pi-openai-blackmagic-compact
 ```
 
-Start Pi as usual, then use `/compact` as usual. Blackmagic has no setup command and does not own Pi's compaction thresholds.
+Start Pi as usual, then use `/compact` as usual. Blackmagic has no separate configuration file and does not own Pi's compaction thresholds.
 
-Use this command to check local readiness for one direct compaction attempt:
+Use the `/blackmagic` command group to inspect or control new remote compaction attempts:
 
 ```text
-/blackmagic-status
+/blackmagic status
+/blackmagic enable
+/blackmagic disable
 ```
 
-It checks the current model route, Pi authorization, branch serialization, and persisted replay. It reports concrete route blockers without exposing endpoint data. It accepts no argument. It does not call the compaction endpoint or guarantee that a later request succeeds. It sends one transient notification and does not create a sticky display state.
+`status` checks the current model route, Pi authorization, branch serialization, and persisted replay. It reports concrete route blockers without exposing endpoint data. `enable` permits new remote compaction attempts. `disable` skips new remote attempts so Pi uses native compaction; persisted checkpoint replay remains active. Both settings persist as typed, namespaced Session entries outside model context. The latest valid setting applies across all Session entries, so tree navigation does not undo it; copied forks inherit setting entries copied into the fork, and a new Session defaults to enabled. Repeating the current setting is idempotent. Invalid or extra arguments show usage before preflight. A compaction attempt keeps the mode captured when its hook starts, so disabling during an in-flight attempt does not cancel it. Status does not call the compaction endpoint or guarantee that a later request succeeds.
 
 ## 0.1.0-rc.11 release candidate
 
@@ -74,7 +76,7 @@ During `session_before_compact`, Blackmagic derives the authoritative current br
 
 Pi then owns and persists the returned atomic Session mutation. On remote success, its summary is the empty string and the package stores one opaque provider window in normal compaction details. Later requests can replay that checkpoint when the active branch and supported route identity match, including an eligible model switch. The checkpoint retains its producer model and uses exact stored hashes for direct replay. When serializer drift prevents old hashes from reproducing, it can rebuild the checkpoint parent plus a synthetic pending compaction through the current serializer. This fallback requires the persisted checkpoint lineage to remain active and one current serialized segment to match. It uses the active Session lineage as its source authority. It does not authenticate manually rewritten historical content when old hashes cannot be reproduced. New checkpoints separate conversation replay from current request instructions and tools. Legacy checkpoints use full-input hashes for direct replay. Legacy checkpoints with persisted active lineage can use the same lineage fallback after serializer drift; that fallback preserves current controls but does not authenticate rewritten historical content. The [authenticated canary](release/v0.1.0-rc.10-authenticated-canary.md) verifies one Codex model pair; other pairs remain unverified. A provider rejection does not trigger an automatic retry. The timeline card follows `session_compact` as a separate TUI-only custom entry.
 
-This boundary is deliberate: Pi owns the conversation record. Blackmagic adds a narrow server checkpoint path. It does not register or wrap providers, observe normal provider calls, create handoffs, or change thresholds.
+This boundary is deliberate: Pi owns the conversation record. Blackmagic adds a narrow server checkpoint path and a Session-local control preference for new remote attempts. It does not register or wrap providers, observe normal provider calls, create handoffs, or change thresholds. Disabling remote attempts does not disable persisted replay for ordinary provider requests.
 
 ## Public source lineage
 

@@ -12,9 +12,13 @@ const model = { provider: "openai", id: "gpt-5", name: "gpt-5", baseUrl: "https:
 const switchedModel = { ...model, id: "gpt-5-mini", name: "gpt-5-mini" };
 const auth = { ok: true, apiKey: "synthetic-key", headers: { "x-test": "yes" } };
 const tool = { name: "probe", description: "Probe the current branch", parameters: { type: "object", properties: {} } };
-function fakePi() { const handlers = new Map(); const renderers = new Map(); const appended = []; return { on: (name, handler) => handlers.set(name, handler), registerCommand(name, command) { this.command = command; }, registerEntryRenderer: (type, renderer) => renderers.set(type, renderer), appendEntry: (type, data) => appended.push({ type, data }), getActiveTools: () => ["probe"], getAllTools: () => [tool], handlers, renderers, appended }; }
+function fakePi({ sessionManager } = {}) { const handlers = new Map(); const renderers = new Map(); const appended = []; return { on: (name, handler) => handlers.set(name, handler), registerCommand(name, command) { this.command = command; }, registerEntryRenderer: (type, renderer) => renderers.set(type, renderer), appendEntry: (type, data) => { appended.push({ type, data }); sessionManager?.appendCustomEntry?.(type, data); }, getActiveTools: () => ["probe"], getAllTools: () => [tool], handlers, renderers, appended }; }
 function assistantToolCall() { return { role: "assistant", content: [{ type: "thinking", thinking: "reasoning before the probe" }, { type: "toolCall", id: "call-1", name: "probe", arguments: {} }], api: model.api, provider: model.provider, model: model.id, usage, stopReason: "toolUse", timestamp: 6 }; }
 function preparation(firstKeptEntryId) { return { firstKeptEntryId, messagesToSummarize: [], turnPrefixMessages: [], isSplitTurn: false, tokensBefore: 12, fileOps: { read: new Set(), edited: new Set() }, settings: { enabled: true, reserveTokens: 16384, keepRecentTokens: 20000 } }; }
+
+function controlContext(session, overrides = {}) {
+  return { model, modelRegistry: { getApiKeyAndHeaders: async () => auth }, sessionManager: session, getSystemPrompt: () => "control system prompt", thinkingLevel: "high", hasUI: true, ui: { notify: () => {} }, ...overrides };
+}
 
 async function compactCurrentBranch(entries, contextOverrides = {}) {
   const session = SessionManager.inMemory("/tmp");
@@ -38,6 +42,173 @@ async function mixedModelSwitchSetup() {
   first.session.appendMessage({ role: "user", content: [{ type: "text", text: "after model switch" }], timestamp: 8 });
   return { first, ctx: { ...first.ctx, model: switchedModel }, branchEntries: first.session.getBranch() };
 }
+
+test("blackmagic controls persist across reload, tree navigation, and copied forks", async () => {
+  const root = await mkdtemp(join(tmpdir(), "hc-controls-"));
+  const sessions = join(root, "sessions");
+  try {
+    await mkdir(sessions, { recursive: true });
+    const session = SessionManager.create(root, sessions);
+    const first = session.appendMessage({ role: "user", content: [{ type: "text", text: "control context" }], timestamp: 1 });
+    session.appendMessage({ role: "assistant", content: [{ type: "text", text: "control answer" }], api: model.api, provider: model.provider, model: model.id, usage, stopReason: "stop", timestamp: 2 });
+    const pi = fakePi({ sessionManager: session });
+    createServerCompactionController(pi);
+    const notices = [];
+    const ctx = controlContext(session, { ui: { notify: (...notice) => notices.push(notice) } });
+    pi.handlers.get("session_start")({ reason: "new" }, ctx);
+    await pi.command.handler("disable", ctx);
+    assert.match(notices.at(-1)[0], /now disabled/i);
+    assert.equal(session.getEntries().filter((entry) => entry.customType === "pi-openai-blackmagic-compact/control/1").length, 1);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const fork = SessionManager.forkFrom(session.getSessionFile(), join(root, "fork"), sessions);
+
+    const reopened = SessionManager.open(session.getSessionFile(), sessions, root);
+    reopened.branch(first);
+    const restoredPi = fakePi({ sessionManager: reopened });
+    createServerCompactionController(restoredPi);
+    let authCalls = 0;
+    const restoredCtx = controlContext(reopened, { modelRegistry: { getApiKeyAndHeaders: async () => { authCalls += 1; return auth; } }, ui: { notify: (...notice) => notices.push(notice) } });
+    restoredPi.handlers.get("session_start")({ reason: "resume" }, restoredCtx);
+    await restoredPi.command.handler("status", restoredCtx);
+    assert.match(notices.at(-1)[0], /disabled.*native compaction.*replay/i);
+    assert.equal(authCalls, 0, "disabled status skips readiness preflight");
+    await restoredPi.command.handler("disable", restoredCtx);
+    assert.equal(reopened.getEntries().filter((entry) => entry.customType === "pi-openai-blackmagic-compact/control/1").length, 1, "same-state command is idempotent");
+    await restoredPi.command.handler("enable", restoredCtx);
+    assert.equal(reopened.getEntries().filter((entry) => entry.customType === "pi-openai-blackmagic-compact/control/1").length, 2);
+    await restoredPi.command.handler("status", restoredCtx);
+    assert.match(notices.at(-1)[0], /enabled.*ready to attempt/i);
+
+    const forkPi = fakePi({ sessionManager: fork });
+    createServerCompactionController(forkPi);
+    const forkNotices = [];
+    const forkCtx = controlContext(fork, { ui: { notify: (...notice) => forkNotices.push(notice) } });
+    forkPi.handlers.get("session_start")({ reason: "fork" }, forkCtx);
+    await forkPi.command.handler("status", forkCtx);
+    assert.match(forkNotices[0][0], /disabled/i);
+
+    const fresh = SessionManager.inMemory("/tmp");
+    fresh.appendMessage({ role: "user", content: [{ type: "text", text: "fresh context" }], timestamp: 1 });
+    const freshPi = fakePi({ sessionManager: fresh });
+    createServerCompactionController(freshPi);
+    const freshNotices = [];
+    const freshCtx = controlContext(fresh, { ui: { notify: (...notice) => freshNotices.push(notice) } });
+    freshPi.handlers.get("session_start")({ reason: "new" }, freshCtx);
+    await freshPi.command.handler("status", freshCtx);
+    assert.match(freshNotices[0][0], /ready to attempt/i);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("disabled controls skip new remote compaction before authorization", async () => {
+  const session = SessionManager.inMemory("/tmp");
+  const first = session.appendMessage({ role: "user", content: [{ type: "text", text: "disabled context" }], timestamp: 1 });
+  const pi = fakePi({ sessionManager: session });
+  createServerCompactionController(pi);
+  let authCalls = 0;
+  const ctx = controlContext(session, { modelRegistry: { getApiKeyAndHeaders: async () => { authCalls += 1; return auth; } } });
+  pi.handlers.get("session_start")({ reason: "new" }, ctx);
+  await pi.command.handler("disable", ctx);
+  const result = await pi.handlers.get("session_before_compact")({ preparation: preparation(first), branchEntries: session.getBranch(), signal: new AbortController().signal }, ctx);
+  assert.equal(result, undefined);
+  assert.equal(authCalls, 0);
+});
+
+test("disabled controls preserve saved-checkpoint replay", async () => {
+  const first = await compactCurrentBranch([{ role: "user", content: [{ type: "text", text: "saved replay context" }], timestamp: 1 }]);
+  first.session.appendCompaction(first.result.compaction.summary, first.result.compaction.firstKeptEntryId, first.result.compaction.tokensBefore, first.result.compaction.details, true);
+  first.session.appendMessage({ role: "user", content: [{ type: "text", text: "replay descendant" }], timestamp: 2 });
+  const pi = fakePi({ sessionManager: first.session });
+  createServerCompactionController(pi);
+  const ctx = controlContext(first.session);
+  pi.handlers.get("session_start")({ reason: "resume" }, ctx);
+  await pi.command.handler("disable", ctx);
+  const payload = await captureNativeBody(model, {
+    systemPrompt: ctx.getSystemPrompt(),
+    messages: convertToLlm(buildSessionContext(first.session.getBranch()).messages),
+    tools: [tool],
+  }, serializationOptions(ctx, auth, new AbortController().signal));
+  const replayed = await pi.handlers.get("before_provider_request")({ payload }, ctx);
+  assert.ok(replayed, "disabled mode must preserve ordinary provider replay");
+  assert.equal(replayed.input.some((item) => item.encrypted_content === "opaque"), true);
+  const next = await pi.handlers.get("session_before_compact")({ preparation: preparation(first.session.getBranch()[0].id), branchEntries: first.session.getBranch(), signal: new AbortController().signal }, ctx);
+  assert.equal(next, undefined, "disabled mode skips only new remote compaction");
+});
+
+test("disable does not cancel a remote compaction already in flight", async () => {
+  const session = SessionManager.inMemory("/tmp");
+  const first = session.appendMessage({ role: "user", content: [{ type: "text", text: "in flight context" }], timestamp: 1 });
+  const pi = fakePi({ sessionManager: session });
+  let releaseAuth;
+  let authStarted;
+  const started = new Promise((resolve) => { authStarted = resolve; });
+  const authGate = new Promise((resolve) => { releaseAuth = resolve; });
+  createServerCompactionController(pi, { fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({ output: [{ type: "compaction", encrypted_content: "in-flight-opaque" }] }) }) });
+  const ctx = controlContext(session, { modelRegistry: { getApiKeyAndHeaders: async () => { authStarted(); await authGate; return auth; } } });
+  pi.handlers.get("session_start")({ reason: "new" }, ctx);
+  const pending = pi.handlers.get("session_before_compact")({ preparation: preparation(first), branchEntries: session.getBranch(), signal: new AbortController().signal }, ctx);
+  await started;
+  await pi.command.handler("disable", ctx);
+  releaseAuth();
+  const result = await pending;
+  assert.equal(result.compaction.details.state, "remote_applied");
+});
+
+test("disable wins the final status notice when readiness is in flight", async () => {
+  const session = SessionManager.inMemory("/tmp");
+  session.appendMessage({ role: "user", content: [{ type: "text", text: "status race context" }], timestamp: 1 });
+  const pi = fakePi({ sessionManager: session });
+  let releaseAuth;
+  let authStarted;
+  const started = new Promise((resolve) => { authStarted = resolve; });
+  const authGate = new Promise((resolve) => { releaseAuth = resolve; });
+  createServerCompactionController(pi);
+  const notices = [];
+  const ctx = controlContext(session, { modelRegistry: { getApiKeyAndHeaders: async () => { authStarted(); await authGate; return auth; } }, ui: { notify: (...notice) => notices.push(notice) } });
+  pi.handlers.get("session_start")({ reason: "new" }, ctx);
+  const pending = pi.command.handler("status", ctx);
+  await started;
+  await pi.command.handler("disable", ctx);
+  releaseAuth();
+  await pending;
+  assert.match(notices.at(-1)[0], /disabled.*native compaction.*replay/i);
+  assert.doesNotMatch(notices.at(-1)[0], /ready to attempt/i);
+});
+
+test("failed control persistence leaves the previous mode active", async () => {
+  const session = SessionManager.inMemory("/tmp");
+  session.appendMessage({ role: "user", content: [{ type: "text", text: "persistence failure context" }], timestamp: 1 });
+  const pi = fakePi();
+  pi.appendEntry = () => { throw new Error("synthetic persistence failure"); };
+  createServerCompactionController(pi);
+  let authCalls = 0;
+  const notices = [];
+  const ctx = controlContext(session, { modelRegistry: { getApiKeyAndHeaders: async () => { authCalls += 1; return auth; } }, ui: { notify: (...notice) => notices.push(notice) } });
+  await pi.command.handler("disable", ctx);
+  assert.equal(notices[0][1], "warning");
+  await pi.command.handler("status", ctx);
+  assert.match(notices.at(-1)[0], /enabled.*ready to attempt/i);
+  assert.equal(authCalls, 1);
+});
+
+test("control commands expose strict completion and usage", async () => {
+  const pi = fakePi();
+  createServerCompactionController(pi);
+  assert.deepEqual(pi.command.getArgumentCompletions(""), [
+    { value: "status", label: "status", description: "Check remote compaction readiness" },
+    { value: "enable", label: "enable", description: "Allow new remote compaction attempts" },
+    { value: "disable", label: "disable", description: "Use native compaction for new attempts" },
+  ]);
+  assert.deepEqual(pi.command.getArgumentCompletions("en"), [{ value: "enable", label: "enable", description: "Allow new remote compaction attempts" }]);
+  assert.equal(pi.command.getArgumentCompletions("disable "), null);
+  assert.equal(pi.command.getArgumentCompletions("status extra"), null);
+  const notices = [];
+  const ctx = controlContext(SessionManager.inMemory("/tmp"), { ui: { notify: (...notice) => notices.push(notice) } });
+  await pi.command.handler("help", ctx);
+  assert.equal(notices[0][1], "warning");
+  assert.match(notices[0][0], /status\|enable\|disable/);
+});
 
 test("direct compaction serializes canonical current-branch messages and persists an empty summary", async () => {
   const entries = [
@@ -219,7 +390,7 @@ test("eligible model switch preserves checkpoint replay and permits the next com
   });
   const notices = [];
   const ctx = { ...switchedContext, hasUI: true, ui: { notify: (...notice) => notices.push(notice) } };
-  await pi.command.handler("", ctx);
+  await pi.command.handler("status", ctx);
   assert.equal(notices.length, 1);
   assert.match(notices[0][0], /ready to attempt/i);
   assert.equal(notices[0][1], "info");
@@ -267,7 +438,7 @@ test("v1 replay survives restart and repeated model-switch compactions", async (
     createServerCompactionController(secondPi, { fetchImpl: async (_url, options) => { requests.push(JSON.parse(options.body)); return { ok: true, status: 200, json: async () => ({ output: [{ type: "compaction", encrypted_content: `opaque-${requests.length + 1}` }] }) }; } });
     const notices = [];
     const switchedCtx = { ...producerCtx, model: switchedModel, sessionManager: reopened, hasUI: true, ui: { notify: (...notice) => notices.push(notice) } };
-    await secondPi.command.handler("", switchedCtx);
+    await secondPi.command.handler("status", switchedCtx);
     assert.match(notices[0][0], /ready to attempt/i);
 
     const branchAfterRestart = reopened.getBranch();
