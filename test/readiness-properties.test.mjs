@@ -51,7 +51,7 @@ function baseModel(route, switchModel, metadataDiffers) {
 function authFor(scenario, producer, current) {
   if (scenario.authMode === "missing") return undefined;
   if (scenario.authMode === "failed") return { ok: false, apiKey: "synthetic-key" };
-  if (scenario.authMode === "bad-route") return scenario.route === "azure" ? { ok: true, apiKey: "synthetic-key", env: { AZURE_OPENAI_BASE_URL: "https://proxy.invalid/openai/v1" } } : { ok: true, apiKey: "synthetic-key", env: { OPENAI_BASE_URL: "https://proxy.invalid/v1" } };
+  if (scenario.authMode === "bad-route") return scenario.route === "azure" ? { ok: true, apiKey: "synthetic-key", env: { AZURE_OPENAI_BASE_URL: "https://proxy.invalid/openai/v1" } } : { ok: true, apiKey: "synthetic-key", env: { OPENAI_BASE_URL: "http://proxy.invalid/v1" } };
   if (scenario.route === "codex") return { ok: true, apiKey: codexToken() };
   if (scenario.route === "azure") return { ok: true, apiKey: "synthetic-key", env: { AZURE_OPENAI_DEPLOYMENT_NAME_MAP: `${producer.id}=deployment-a,${current.id}=deployment-a` } };
   return { ok: true, apiKey: "synthetic-key" };
@@ -78,7 +78,7 @@ function nativeControlItem(providerPayload) {
 }
 function oracle(scenario, nativeEligible, contextEligible) {
   if (!nativeEligible || !contextEligible || scenario.route === "unsupported" || scenario.authMode !== "valid" || !scenario.systemPrompt) return false;
-  if (["tampered", "duplicate", "source-tampered", "artifact-hash-corrupt", "artifact-length-corrupt", "unknown-scope"].includes(scenario.checkpoint)) return false;
+  if (["tampered", "duplicate", "artifact-hash-corrupt", "artifact-length-corrupt", "unknown-scope"].includes(scenario.checkpoint)) return false;
   if (scenario.checkpoint === "switch-unavailable") return false;
   if (scenario.checkpoint !== "none" && !scenario.descendant) return false;
   return true;
@@ -219,7 +219,7 @@ async function runScenario(scenario, { remoteEnabled = true, verifyReplay = true
     const statusFetchCalls = fetchCalls.length - fetchBeforeStatus;
     const branchPreserved = JSON.stringify(session.getBranch()) === before;
     if (statusFetchCalls !== 0) throw new Error(`status performed provider egress: ${statusFetchCalls}`);
-    if (verifyReplay && observed && effective.checkpoint !== "none" && !["tampered", "duplicate", "source-tampered", "payload-tampered"].includes(effective.checkpoint)) {
+    if (verifyReplay && observed && effective.checkpoint !== "none" && !["tampered", "duplicate", "payload-tampered"].includes(effective.checkpoint)) {
       const currentPayload = await payload(context, current, session.getBranch(), auth, currentTools);
       const replayed = await pi.handlers.get("before_provider_request")({ payload: currentPayload }, context);
       assert.ok(replayed, "normal provider replay must succeed");

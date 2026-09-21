@@ -129,6 +129,33 @@ test("timeline entries append once after recognized extension compaction only", 
   assert.equal(renderer({ data: { method: "secret-model" } }, {}, { bg: (_key, text) => text, fg: (_key, text) => text }), undefined);
 });
 
+test("timeline ownership follows the current Session leaf and rejects native leaves", () => {
+  const remote = (surface, protocol) => ({ schemaVersion: 1, state: "remote_applied", identity: { surface, protocol } });
+  const stale = { id: "stale", type: "compaction", details: remote("openai_api", "responses_compact_v1") };
+  const current = { id: "current", type: "compaction", details: remote("chatgpt_codex", "codex_compaction_trigger_v2") };
+  const session = { getLeafId: () => current.id, getBranch: () => [stale, current] };
+  const pi = fakePi();
+  createServerCompactionController(pi);
+  const compact = pi.handlers.get("session_compact");
+  compact({ compactionEntry: stale, fromExtension: true }, { sessionManager: session });
+  compact({ compactionEntry: stale, fromExtension: true }, { sessionManager: session });
+  assert.deepEqual(pi.appended, [{ type: "pi-openai-blackmagic-compact/compaction-timeline/1", data: { method: "remote_codex_v2" } }]);
+
+  const fallbackPi = fakePi();
+  createServerCompactionController(fallbackPi);
+  const fallback = fallbackPi.handlers.get("session_compact");
+  fallback({ compactionEntry: stale, fromExtension: true }, { sessionManager: { getLeafId: () => "message", getBranch: () => [{ id: "message", type: "message" }] } });
+  assert.deepEqual(fallbackPi.appended[0].data, { method: "remote_responses_v1" });
+
+  for (const details of [{ schemaVersion: 1, state: "native" }, { schemaVersion: 1, state: "remote_applied", identity: { surface: "unsupported", protocol: "unsupported" } }]) {
+    const leaf = { id: "blocked", type: "compaction", details };
+    const blockedPi = fakePi();
+    createServerCompactionController(blockedPi);
+    blockedPi.handlers.get("session_compact")({ compactionEntry: stale, fromExtension: true }, { sessionManager: { getLeafId: () => leaf.id, getBranch: () => [stale, leaf] } });
+    assert.deepEqual(blockedPi.appended, []);
+  }
+});
+
 test("remote timeline expands the saved checkpoint without a second summary", () => {
   const session = SessionManager.inMemory("/tmp");
   const anchor = session.appendMessage({ role: "user", content: [{ type: "text", text: "anchor" }], timestamp: 1 });
@@ -160,8 +187,24 @@ test("direct compaction is independent of auxiliary provider requests and defers
   const { result, pi, ctx } = await compactCurrentBranch([entry]);
   assert.equal(result.compaction.details.state, "remote_applied");
   assert.equal(pi.handlers.has("message_end"), false);
-  const unsupported = await pi.handlers.get("session_before_compact")({ preparation: preparation("x"), branchEntries: [], signal: new AbortController().signal }, { ...ctx, model: { ...model, baseUrl: "https://proxy.invalid/v1" } });
+  const unsupported = await pi.handlers.get("session_before_compact")({ preparation: preparation("x"), branchEntries: [], signal: new AbortController().signal }, { ...ctx, model: { ...model, api: "unsupported-api", baseUrl: "https://proxy.invalid/v1" } });
   assert.equal(unsupported, undefined, "Pi must perform its native fallback for an unsupported model");
+});
+
+test("legacy lineage replay keeps the next compaction ready after serializer drift", async () => {
+  const first = await compactCurrentBranch([{ role: "user", content: [{ type: "text", text: "legacy drift source" }], timestamp: 1 }]);
+  first.session.appendCompaction(first.result.compaction.summary, first.result.compaction.firstKeptEntryId, first.result.compaction.tokensBefore, first.result.compaction.details, true);
+  first.session.appendMessage({ role: "user", content: [{ type: "text", text: "legacy drift descendant" }], timestamp: 2 });
+  const branchEntries = first.session.getBranch().map((entry) => entry.type === "compaction" ? {
+    ...entry,
+    details: { ...entry.details, replay: { namespace: entry.details.replay.namespace, replacedItemHashes: ["0".repeat(64)] } },
+  } : entry);
+  let fetchCalls = 0;
+  const pi = fakePi();
+  createServerCompactionController(pi, { fetchImpl: async () => { fetchCalls += 1; return { ok: true, status: 200, json: async () => ({ output: [{ type: "compaction", encrypted_content: "legacy-next" }] }) }; } });
+  const result = await pi.handlers.get("session_before_compact")({ preparation: preparation(branchEntries[0].id), branchEntries, signal: new AbortController().signal }, first.ctx);
+  assert.equal(result.compaction.details.state, "remote_applied");
+  assert.equal(fetchCalls, 1);
 });
 
 test("eligible model switch preserves checkpoint replay and permits the next compaction", async () => {
@@ -250,7 +293,7 @@ test("v1 replay survives restart and repeated model-switch compactions", async (
   }
 });
 
-test("native mixed-history replay rejects an altered retained source with original hashes", async () => {
+test("lineage fallback does not authenticate an altered retained source", async () => {
   const { ctx, branchEntries } = await mixedModelSwitchSetup();
   const checkpoint = branchEntries.find((entry) => entry.type === "compaction");
   const originalHashes = structuredClone(checkpoint.details.replay.replacedItemHashes);
@@ -262,10 +305,10 @@ test("native mixed-history replay rejects an altered retained source with origin
   assert.deepEqual(checkpoint.details.replay.replacedItemHashes, originalHashes);
   let fetchCalls = 0;
   const pi = fakePi();
-  createServerCompactionController(pi, { fetchImpl: async () => { fetchCalls += 1; } });
+  createServerCompactionController(pi, { fetchImpl: async () => { fetchCalls += 1; return { ok: true, status: 200, json: async () => ({ output: [{ type: "compaction", encrypted_content: "lineage-opaque" }] }) }; } });
   const result = await pi.handlers.get("session_before_compact")({ preparation: preparation(alteredBranch[0].id), branchEntries: alteredBranch, signal: new AbortController().signal }, ctx);
-  assert.equal(result, undefined);
-  assert.equal(fetchCalls, 0, "altered retained source must not reach the provider");
+  assert.equal(result.compaction.details.state, "remote_applied");
+  assert.equal(fetchCalls, 1, "lineage fallback may proceed without historical hash authentication");
 });
 
 test("native mixed-history replay rejects tampered current-model payload", async () => {
@@ -286,7 +329,7 @@ test("native mixed-history replay rejects tampered current-model payload", async
   assert.equal(replayed, undefined, "tampered provider payload must not be accepted or rehashed");
 });
 
-test("model switch does not bypass a persisted replay segment mismatch", async () => {
+test("model switch uses active lineage after a persisted replay segment mismatch", async () => {
   const first = await compactCurrentBranch([{ role: "user", content: [{ type: "text", text: "branch mismatch anchor" }], timestamp: 1 }]);
   first.session.appendCompaction(first.result.compaction.summary, first.result.compaction.firstKeptEntryId, first.result.compaction.tokensBefore, first.result.compaction.details, true);
   first.session.appendMessage({ role: "user", content: [{ type: "text", text: "descendant" }], timestamp: 2 });
@@ -296,8 +339,8 @@ test("model switch does not bypass a persisted replay segment mismatch", async (
   } : entry);
   let fetchCalls = 0;
   const pi = fakePi();
-  createServerCompactionController(pi, { fetchImpl: async () => { fetchCalls += 1; } });
+  createServerCompactionController(pi, { fetchImpl: async () => { fetchCalls += 1; return { ok: true, status: 200, json: async () => ({ output: [{ type: "compaction", encrypted_content: "lineage-opaque" }] }) }; } });
   const result = await pi.handlers.get("session_before_compact")({ preparation: preparation(branchEntries[0].id), branchEntries, signal: new AbortController().signal }, { ...first.ctx, model: switchedModel });
-  assert.equal(result, undefined);
-  assert.equal(fetchCalls, 0, "a mismatched replay segment must never reach the provider");
+  assert.equal(result.compaction.details.state, "remote_applied");
+  assert.equal(fetchCalls, 1, "active lineage must handle serializer drift after direct mismatch");
 });

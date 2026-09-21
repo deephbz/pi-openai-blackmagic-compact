@@ -94,8 +94,8 @@ test("status rejects malformed Codex credentials with an authorization reason", 
   assert.match(result.notices[0][0], /authorization|account identity/i);
 });
 
-test("status uses the effective auth environment route, not only the display model route", async () => {
-  const result = await runStatus({ auth: { ok: true, apiKey: "synthetic-key", env: { OPENAI_BASE_URL: "https://proxy.invalid/v1" } } });
+test("status rejects an effective route with an unsupported API", async () => {
+  const result = await runStatus({ model: { ...openAIModel, api: "unsupported-api" }, auth: { ok: true, apiKey: "synthetic-key", env: { OPENAI_BASE_URL: "https://proxy.invalid/v1" } } });
   assert.equal(result.notices.length, 1);
   assert.doesNotMatch(result.notices[0][0], /ready to attempt/i);
   assert.match(result.notices[0][0], /unsupported provider route/i);
@@ -194,7 +194,7 @@ test("status reports a concrete model or route blocker instead of false readines
     { name: "missing model", model: null, missingModel: true, auth: { ok: true, apiKey: "synthetic-key" }, reason: /missing model/i },
     { name: "insecure endpoint", model: openAIModel, auth: { ok: true, apiKey: "synthetic-key", env: { OPENAI_BASE_URL: "http://api.openai.com/v1" } }, reason: /endpoint not HTTPS/i },
     { name: "invalid endpoint", model: openAIModel, auth: { ok: true, apiKey: "synthetic-key", env: { OPENAI_BASE_URL: "not a url" } }, reason: /invalid endpoint/i },
-    { name: "unsupported route", model: openAIModel, auth: { ok: true, apiKey: "synthetic-key", env: { OPENAI_BASE_URL: "https://example.com/v1" } }, reason: /unsupported provider route/i },
+    { name: "unsupported model", model: { ...openAIModel, id: "gpt-4.1" }, auth: { ok: true, apiKey: "synthetic-key", env: { OPENAI_BASE_URL: "https://example.com/v1" } }, reason: /unsupported provider route/i },
   ];
   for (const scenario of cases) {
     const ctx = statusContext({ model: scenario.model, auth: scenario.auth });
@@ -215,6 +215,20 @@ test("status reports serialization unavailability instead of readiness", async (
   const ctx = statusContext();
   delete ctx.getSystemPrompt;
   await assertBlocked(ctx, { reasonPattern: /serialization unavailable/i });
+});
+
+test("status accepts legacy lineage replay after serializer drift", async () => {
+  const identity = { surface: "openai_api", protocol: "responses_compact_v1", endpoint: "https://api.openai.com/v1", model: "gpt-5", api: "openai-responses" };
+  const details = checkpointDetails({ identity, opaqueWindow: [{ type: "compaction", encrypted_content: "legacy-opaque" }] });
+  details.replay = { namespace: "pi-openai-blackmagic-compact/1", replacedItemHashes: ["0".repeat(64)] };
+  const session = SessionManager.inMemory("/tmp");
+  const first = session.appendMessage({ role: "user", content: [{ type: "text", text: "legacy readiness source" }], timestamp: 1 });
+  session.appendCompaction("", first, 2, { ...details, lineage: { firstKeptEntryId: first, leafId: first } }, true);
+  session.appendMessage({ role: "user", content: [{ type: "text", text: "legacy readiness descendant" }], timestamp: 2 });
+  const result = await runStatus({ session, fetchImpl: async () => { throw new Error("status must not call provider"); } });
+  assert.equal(result.notices.length, 1);
+  assert.match(result.notices[0][0], /ready to attempt/i);
+  assert.equal(result.notices[0][1], "info");
 });
 
 test("status rejects a persisted checkpoint that no longer matches the active branch", async () => {

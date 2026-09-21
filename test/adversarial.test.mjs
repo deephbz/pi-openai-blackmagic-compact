@@ -63,6 +63,54 @@ const prepared = {
   input: [{ role: "user", content: "old" }, { type: "reasoning", encrypted_content: "opaque-reasoning" }, { role: "assistant", content: "latest" }],
 };
 
+test("generic GPT-5 and GPT-6 routes reuse the Responses adapter", async () => {
+  const cases = [
+    { provider: "synthetic-a", baseUrl: "https://gateway.example", model: "@azure/gpt-5" },
+    { provider: "synthetic-b", baseUrl: "https://gateway.example/prefix/v1", model: "@bedrock-mantle-usw2/openai.gpt-6-astra" },
+    { provider: "synthetic-c", baseUrl: "https://other.example/api/responses", model: "provider/GPT-5.6-custom" },
+  ];
+  for (const scenario of cases) {
+    const identity = identifySurface({ api: "openai-responses", ...scenario });
+    assert.equal(identity.kind, "supported");
+    assert.equal(identity.surface, "openai_api");
+    let request;
+    const result = await compactProviderInput({
+      identity,
+      prepared,
+      auth: { apiKey: "synthetic-key" },
+      fetchImpl: async (url, options) => {
+        request = { url, headers: options.headers, body: JSON.parse(options.body) };
+        return { ok: true, status: 200, json: async () => ({ output: [{ type: "compaction", encrypted_content: "synthetic-opaque" }] }) };
+      },
+    });
+    assert.ok(result.details, result.error?.message);
+    assert.equal(request.url, `${identity.endpoint}/responses/compact`);
+    assert.equal(request.headers.authorization, "Bearer synthetic-key");
+    assert.equal(request.body.model, scenario.model);
+    assert.deepEqual(result.details.identity, identity);
+  }
+});
+
+test("generic GPT route rejects HTTP, wrong API, GPT-4, and Claude models", () => {
+  const base = { provider: "synthetic", api: "openai-responses", model: "gpt-5" };
+  for (const candidate of [
+    { ...base, baseUrl: "http://gateway.example/prefix" },
+    { ...base, api: "openai-chat", baseUrl: "https://gateway.example/prefix" },
+    { ...base, model: "gpt-4.1", baseUrl: "https://gateway.example/prefix" },
+    { ...base, model: "claude-sonnet", baseUrl: "https://gateway.example/prefix" },
+  ]) assert.equal(identifySurface(candidate).kind, "unsupported", JSON.stringify(candidate));
+});
+
+test("generic route replay rejects a changed endpoint", async () => {
+  const checkpointIdentity = identifySurface({ provider: "synthetic", api: "openai-responses", baseUrl: "https://gateway-a.example/prefix", model: "gpt-6" });
+  const result = await replayWithCurrentModel({
+    checkpointIdentity,
+    currentModel: { provider: "synthetic", id: "gpt-6", baseUrl: "https://gateway-b.example/prefix", api: "openai-responses" },
+  });
+  assert.equal(result.replayed, undefined);
+  assert.ok(result.telemetry.some((event) => event.failureClass === "identity_mismatch"));
+});
+
 test("provider compaction interface rejects an identity without one matching adapter", async () => {
   let fetchCalls = 0;
   const result = await compactProviderInput({
@@ -311,6 +359,42 @@ test("same-route Codex and same-deployment Azure model aliases retain native rep
     { name: "Codex", replayed: true, nextCompaction: "remote_applied" },
     { name: "Azure deployment alias", replayed: true, nextCompaction: "remote_applied" },
   ]);
+});
+
+test("lineage fallback reconstructs serializer drift from the active checkpoint parent", async () => {
+  const session = SessionManager.inMemory("/tmp");
+  const producer = nativeModel("openai", "gpt-5", "https://api.openai.com/v1", "openai-responses");
+  const firstKeptEntryId = session.appendMessage({ role: "user", content: [{ type: "text", text: "lineage source" }], timestamp: 1 });
+  session.appendMessage({ role: "assistant", content: [{ type: "text", text: "lineage answer" }], api: producer.api, provider: producer.provider, model: producer.id, usage: nativeUsage, stopReason: "stop", timestamp: 2 });
+  const pi = fakePi();
+  createServerCompactionController(pi, { fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({ output: [{ type: "compaction", encrypted_content: "lineage-opaque" }] }) }) });
+  const auth = { ok: true, apiKey: "synthetic-key" };
+  const context = { model: producer, modelRegistry: { getApiKeyAndHeaders: async () => auth }, sessionManager: session, getSystemPrompt: () => "lineage system", thinkingLevel: "high" };
+  const result = await pi.handlers.get("session_before_compact")({ preparation: nativePreparation(firstKeptEntryId), branchEntries: session.getBranch(), signal: new AbortController().signal }, context);
+  session.appendCompaction(result.compaction.summary, result.compaction.firstKeptEntryId, result.compaction.tokensBefore, result.compaction.details, true);
+  session.appendMessage({ role: "user", content: [{ type: "text", text: "lineage descendant" }], timestamp: 3 });
+  const payload = await captureNativeBody(producer, { systemPrompt: context.getSystemPrompt(), messages: convertToLlm(buildSessionContext(session.getBranch()).messages), tools: [] }, serializationOptions(context, auth, new AbortController().signal));
+  result.compaction.details.replay.replacedItemHashes = ["0".repeat(64)];
+  const replayed = await pi.handlers.get("before_provider_request")({ payload }, context);
+  assert.ok(replayed, "active Session lineage should permit serializer-drift replay");
+  assert.deepEqual(replayed.instructions, payload.instructions);
+  assert.deepEqual(replayed.tools, payload.tools);
+  assert.equal(replayed.input.some((item) => item.type === "compaction" && item.encrypted_content === "lineage-opaque"), true);
+  assert.equal(JSON.stringify(replayed.input).includes("lineage descendant"), true);
+
+  const invalidLineageCases = [
+    ["missing", (details) => { delete details.lineage; }],
+    ["inactive", (details) => { details.lineage.leafId = "inactive-parent"; }],
+    ["ambiguous", (details, branch) => { branch.push({ ...branch.find((entry) => entry.id === details.lineage.leafId) }); }],
+  ];
+  for (const [name, alter] of invalidLineageCases) {
+    const branch = structuredClone(session.getBranch());
+    const checkpoint = branch.find((entry) => entry.type === "compaction");
+    checkpoint.details.replay.replacedItemHashes = ["0".repeat(64)];
+    alter(checkpoint.details, branch);
+    const rejected = await pi.handlers.get("before_provider_request")({ payload }, { ...context, sessionManager: { ...session, getBranch: () => branch } });
+    assert.equal(rejected, undefined, `${name} lineage must fail closed`);
+  }
 });
 
 test("cross-model translation uses registered producer metadata and accepts direct proof when unavailable", async () => {

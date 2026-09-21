@@ -80,6 +80,8 @@ export function identifySurface({ provider, baseUrl, api, model, deployment }) {
   if (url.protocol !== "https:") return { kind: "unsupported", reason: "insecure_endpoint" };
   if (provider === "openai" && api === "openai-responses" && OFFICIAL_OPENAI.has(host) && (pathname === "/v1" || pathname === ""))
     return { kind: "supported", surface: "openai_api", protocol: PROTOCOLS.openai_api, endpoint: safeUrl(baseUrl), model, api: api ?? "openai-responses" };
+  if (api === "openai-responses" && typeof model === "string" && /gpt-[56]/i.test(model))
+    return { kind: "supported", surface: "openai_api", protocol: PROTOCOLS.openai_api, endpoint: safeUrl(baseUrl), model, api: api ?? "openai-responses" };
   if (provider === "azure-openai-responses" && api === "azure-openai-responses" && host.endsWith(".openai.azure.com") && pathname === "/openai/v1" && typeof deployment === "string" && deployment)
     return { kind: "supported", surface: "azure_openai", protocol: PROTOCOLS.azure_openai, endpoint: safeUrl(baseUrl), model, deployment, api: api ?? "openai-responses" };
   if (provider === "openai-codex" && api === "openai-codex-responses" && CODEX_HOSTS.has(host) && pathname === "/backend-api")

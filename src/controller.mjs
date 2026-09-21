@@ -2,7 +2,7 @@ import { buildSessionContext, convertToLlm } from "@earendil-works/pi-coding-age
 import { azureOpenAIResponsesApi, openAICodexResponsesApi, openAIResponsesApi } from "@earendil-works/pi-ai/compat";
 import { Box, Text } from "@earendil-works/pi-tui";
 import { compactProviderInput, validateProviderAuthorization } from "./adapters.mjs";
-import { COMPACTION_TIMELINE_ENTRY_TYPE, compactionTimelineData, compactionTimelineLabel, identifySurface, latestActiveCompaction, replayIdentityMatches, replaceOneHashSegment, safeTelemetry, sha256 } from "./contract.mjs";
+import { COMPACTION_TIMELINE_ENTRY_TYPE, compactionTimelineData, compactionTimelineLabel, identifySurface, latestActiveCompaction, replayIdentityMatches, safeTelemetry, sha256 } from "./contract.mjs";
 
 const DELEGATES = Object.freeze({
   "openai-responses": openAIResponsesApi().streamSimple,
@@ -82,45 +82,50 @@ function replaceDirectReplay(payload, replay, artifact) {
     ? replaceConversationSegment(payload, replay.replacedItemHashes, artifact)
     : replaceLegacyReplay(payload, replay?.replacedItemHashes, artifact);
 }
-function producerModel(ctx, identity) {
-  const current = ctx?.model;
-  if (!current || typeof identity?.model !== "string" || !identity.model) return undefined;
-  if (current.id === identity.model) return current;
-  const configured = typeof ctx.modelRegistry?.find === "function" ? ctx.modelRegistry.find(current.provider, identity.model) : undefined;
-  return configured ?? { ...current, id: identity.model, name: identity.model };
+function activeLineage(branch, checkpoint) {
+  const lineage = checkpoint?.details?.lineage;
+  if (!Array.isArray(branch) || !lineage || typeof lineage !== "object") return undefined;
+  if (typeof lineage.firstKeptEntryId !== "string" || typeof lineage.leafId !== "string") return undefined;
+  const checkpointIndexes = branch.flatMap((entry, index) => entry?.id === checkpoint.entry.id && entry.type === "compaction" ? [index] : []);
+  const parentIndexes = branch.flatMap((entry, index) => entry?.id === lineage.leafId ? [index] : []);
+  const keptIndexes = branch.flatMap((entry, index) => entry?.id === lineage.firstKeptEntryId ? [index] : []);
+  if (checkpointIndexes.length !== 1 || parentIndexes.length !== 1 || keptIndexes.length !== 1) return undefined;
+  const checkpointIndex = checkpointIndexes[0];
+  const parentIndex = parentIndexes[0];
+  if (parentIndex + 1 !== checkpointIndex || checkpoint.entry.parentId !== lineage.leafId) return undefined;
+  if (keptIndexes[0] > parentIndex || checkpoint.entry.firstKeptEntryId !== lineage.firstKeptEntryId) return undefined;
+  return { checkpointIndex, parentIndex, firstKeptEntryIndex: keptIndexes[0] };
 }
-function checkpointPrefix(branch, checkpoint) {
-  if (!Array.isArray(branch) || !checkpoint?.entry) return undefined;
-  const checkpointIndex = branch.findIndex((entry) => entry?.id === checkpoint.entry.id && entry.type === "compaction");
-  if (checkpointIndex < 0) return undefined;
-  return branch.slice(0, checkpointIndex + 1);
+function lineagePendingCompaction(branch, checkpoint, lineage) {
+  const parentBranch = branch.slice(0, lineage.parentIndex + 1);
+  return [...parentBranch, {
+    type: "compaction",
+    id: "pi-openai-blackmagic-compact-pending",
+    parentId: checkpoint.details.lineage.leafId,
+    timestamp: 0,
+    summary: "",
+    firstKeptEntryId: checkpoint.details.lineage.firstKeptEntryId,
+    tokensBefore: checkpoint.entry.tokensBefore,
+  }];
 }
-async function translateReplay(payload, checkpoint, identity, pi, ctx, auth, branch) {
+async function replayCheckpoint(payload, checkpoint, identity, pi, ctx, auth, branch) {
   const replay = checkpoint?.details?.replay;
   if (!payload || !replayIdentityMatches(checkpoint?.details, identity) || replay?.namespace !== REPLAY_NAMESPACE) return undefined;
   const direct = replaceDirectReplay(payload, replay, checkpoint.details.checkpoint?.artifact);
   if (direct) return direct;
-  if (ctx?.model?.id === checkpoint.details?.identity?.model) return undefined;
-  let producerPayload;
+  const lineage = activeLineage(branch, checkpoint);
+  if (!lineage || typeof ctx?.getSystemPrompt !== "function") return undefined;
   let currentPayload;
   try {
-    const sourceBranch = checkpointPrefix(branch, checkpoint);
-    const model = producerModel(ctx, checkpoint.details.identity);
-    if (!sourceBranch || !model || typeof ctx?.getSystemPrompt !== "function") return undefined;
-    // Prove the stored producer segment, then translate that exact prefix once.
+    const sourceBranch = lineagePendingCompaction(branch, checkpoint, lineage);
     const context = { systemPrompt: ctx.getSystemPrompt(), messages: convertToLlm(buildSessionContext(sourceBranch).messages), tools: activeTools(pi) };
-    producerPayload = await captureNativeBody(model, context, serializationOptions(ctx, auth, ctx.signal));
     currentPayload = await captureNativeBody(ctx.model, context, serializationOptions(ctx, auth, ctx.signal));
   } catch {
     return undefined;
   }
-  const producerConversation = conversationInput(producerPayload.input);
-  const producerProof = replay.scope === REPLAY_SCOPE
-    ? replaceOneHashSegment(producerConversation, replay.replacedItemHashes, [])
-    : replaceOneHashSegment(producerPayload.input, replay.replacedItemHashes, []);
-  if (!producerProof || producerProof.length !== 0) return undefined;
-  const currentHashes = conversationInput(currentPayload.input).map((item) => sha256(item));
-  return replaceConversationSegment(payload, currentHashes, checkpoint.details.checkpoint?.artifact);
+  const currentSegment = conversationInput(currentPayload.input);
+  if (currentSegment.length === 0) return undefined;
+  return replaceConversationSegment(payload, currentSegment.map((item) => sha256(item)), checkpoint.details.checkpoint?.artifact);
 }
 function activeTools(pi) {
   if (typeof pi?.getActiveTools !== "function" || typeof pi?.getAllTools !== "function") throw new Error("Pi tool access is unavailable");
@@ -217,7 +222,7 @@ async function preflightCompaction(pi, event, ctx, auth, { rejectEmptyContext = 
   const checkpoint = activeCheckpoint(event.branchEntries ?? ctx.sessionManager?.getBranch?.());
   if (checkpoint?.invalid) return { failure: "persisted replay checkpoint is invalid" };
   if (checkpoint) {
-    const replayed = await translateReplay(compactBody.payload, checkpoint, identity, pi, modelContext, auth, branchEntries);
+    const replayed = await replayCheckpoint(compactBody.payload, checkpoint, identity, pi, modelContext, auth, branchEntries);
     if (!replayed) return { failure: "persisted replay does not match the current branch" };
     compactBody = extractPrepared(replayed);
   }
@@ -264,8 +269,15 @@ export function createServerCompactionController(pi, options = {}) {
   });
   pi.on("session_compact", (event, ctx) => {
     sessionManager = ctx?.sessionManager ?? sessionManager;
-    const data = event?.fromExtension && compactionTimelineData(event.compactionEntry);
-    const id = event?.compactionEntry?.id;
+    let leaf;
+    try {
+      const leafId = sessionManager?.getLeafId?.();
+      const branch = sessionManager?.getBranch?.();
+      leaf = Array.isArray(branch) ? branch.find((entry) => entry?.id === leafId) : undefined;
+    } catch { leaf = undefined; }
+    const compactionEntry = leaf?.type === "compaction" ? leaf : event?.compactionEntry;
+    const data = event?.fromExtension && compactionTimelineData(compactionEntry);
+    const id = compactionEntry?.id;
     if (!data || !id || appendedCompactions.has(id)) return;
     appendedCompactions.add(id);
     pi.appendEntry(COMPACTION_TIMELINE_ENTRY_TYPE, data);
@@ -279,7 +291,8 @@ export function createServerCompactionController(pi, options = {}) {
     let branch;
     try { branch = ctx?.sessionManager?.getBranch?.(); } catch { branch = undefined; }
     const checkpoint = activeCheckpoint(branch);
-    const replayed = checkpoint && !checkpoint.invalid ? await translateReplay(event.payload, checkpoint, identity, pi, modelContext, auth, branch) : undefined;
+    let replayed;
+    if (checkpoint && !checkpoint.invalid) replayed = await replayCheckpoint(event.payload, checkpoint, identity, pi, modelContext, auth, branch);
     if (replayed) emit("remote_replayed", { identity, checkpoint: checkpoint.details.checkpoint, retention: checkpoint.details.checkpoint.retention });
     else if (checkpoint?.invalid) emit("remote_invalidated", { identity, failureClass: "replay_segment_mismatch" });
     else if (checkpoint?.details?.schemaVersion === 1) emit("remote_invalidated", { identity, failureClass: replayIdentityMatches(checkpoint.details, identity) ? "replay_segment_mismatch" : "identity_mismatch" });
