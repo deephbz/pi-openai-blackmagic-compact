@@ -16,7 +16,7 @@ With Blackmagic, it first derives the current branch through Pi's normal seriali
 
 ## Install and use
 
-The current checkout contains unreleased changes after `0.1.0-rc.10`, including replay drift fallback, Session-leaf timeline ownership, and generalized GPT-5/GPT-6 route recognition. The install command below remains the published rc.10 baseline and does not contain these changes. See the [rc.10 release notes](release/v0.1.0-rc.10-release-notes.md).
+The current checkout prepares candidate `0.1.0-rc.11` for the `next` dist-tag. It is not published. The install command below remains the published rc.10 baseline and does not contain the current changes. See the [rc.11 release notes](release/v0.1.0-rc.11-release-notes.md).
 
 ```sh
 pi install npm:@hypercarrier/pi-openai-blackmagic-compact@0.1.0-rc.10
@@ -34,12 +34,12 @@ Use this command to check local readiness for one direct compaction attempt:
 
 It checks the current model route, Pi authorization, branch serialization, and persisted replay. It reports concrete route blockers without exposing endpoint data. It accepts no argument. It does not call the compaction endpoint or guarantee that a later request succeeds. It sends one transient notification and does not create a sticky display state.
 
-## 0.1.0-rc.10 release candidate
+## 0.1.0-rc.11 release candidate
 
-This candidate adds conversation-scoped replay that preserves current request
-instructions and tools, plus fail-closed handling for damaged persisted
-checkpoints. It targets the `next` dist-tag; published `latest` remains on the
-existing release.
+This candidate carries conversation-scoped replay, lineage-based serializer-drift
+fallback, Session-leaf timeline ownership, and generalized GPT-5/GPT-6 route
+recognition. It is prepared for `next`; no tag or publication exists yet. The
+published `latest` remains on rc.9. See the [rc.11 release notes](release/v0.1.0-rc.11-release-notes.md).
 
 Known limits:
 

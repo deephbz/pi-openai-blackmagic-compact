@@ -2,12 +2,13 @@
 
 As of: 2026-09-21
 
-Source base: `0.1.0-rc.10`. Package version and publication remain unchanged.
+Source base: `0.1.0-rc.10`. Candidate metadata: `0.1.0-rc.11` for the
+`next` dist-tag. This candidate is not published. Observed published tags remain
+`next` rc.10 and `latest` rc.9.
 
-Unreleased changes: serializer-drift lineage fallback serves provider requests
-and compaction preflight. Timeline cards prefer the current Session compaction
-leaf. Route recognition accepts configured HTTPS GPT-5/GPT-6 Responses endpoints.
-Earlier release notes: [rc.10](../../release/v0.1.0-rc.10-release-notes.md).
+The candidate carries serializer-drift lineage fallback for provider requests
+and compaction preflight, Session-leaf timeline ownership, and configured HTTPS
+GPT-5/GPT-6 Responses recognition. Earlier release notes: [rc.10](../../release/v0.1.0-rc.10-release-notes.md). See the [rc.11 release notes](../../release/v0.1.0-rc.11-release-notes.md).
 
 Publication evidence lives in repository release receipts. The
 [rc.8 release receipt](../../release/v0.1.0-rc.8-release-receipt.md) records the
