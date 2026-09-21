@@ -16,7 +16,7 @@ With Blackmagic, it first derives the current branch through Pi's normal seriali
 
 ## Install and use
 
-The current checkout prepares candidate `0.1.0-rc.11` for the `next` dist-tag. It is not published. The install command below remains the published rc.10 baseline and does not contain the current changes. See the [rc.11 release notes](release/v0.1.0-rc.11-release-notes.md).
+The current checkout prepares candidate `0.1.0-rc.11` for the `latest` dist-tag. It is not published. The install command below remains the published rc.10 baseline and does not contain the current changes. See the [rc.11 release notes](release/v0.1.0-rc.11-release-notes.md).
 
 ```sh
 pi install npm:@hypercarrier/pi-openai-blackmagic-compact@0.1.0-rc.10
@@ -38,8 +38,8 @@ It checks the current model route, Pi authorization, branch serialization, and p
 
 This candidate carries conversation-scoped replay, lineage-based serializer-drift
 fallback, Session-leaf timeline ownership, and generalized GPT-5/GPT-6 route
-recognition. It is prepared for `next`; no tag or publication exists yet. The
-published `latest` remains on rc.9. See the [rc.11 release notes](release/v0.1.0-rc.11-release-notes.md).
+recognition. It is prepared for `latest`; no tag or publication exists yet. The
+observed `next` remains on rc.10 and published `latest` remains on rc.9. See the [rc.11 release notes](release/v0.1.0-rc.11-release-notes.md).
 
 Known limits:
 

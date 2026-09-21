@@ -3,7 +3,7 @@
 As of: 2026-09-21
 
 Source base: `0.1.0-rc.10`. Candidate metadata: `0.1.0-rc.11` for the
-`next` dist-tag. This candidate is not published. Observed published tags remain
+`latest` dist-tag. This candidate is not published. Observed published tags remain
 `next` rc.10 and `latest` rc.9.
 
 The candidate carries serializer-drift lineage fallback for provider requests
