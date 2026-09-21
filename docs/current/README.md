@@ -2,13 +2,13 @@
 
 As of: 2026-09-21
 
-Source base: `0.1.0-rc.10`. Candidate metadata: `0.1.0-rc.11` for the
-`latest` dist-tag. This candidate is not published. Observed published tags remain
-`next` rc.10 and `latest` rc.9.
+Source base: `0.1.0-rc.11`. Current metadata: `0.1.0-rc.12`.
+The prior release boundary is documented in the [GitHub rc.11 release](https://github.com/deephbz/pi-openai-blackmagic-compact/releases/tag/v0.1.0-rc.11).
 
-The candidate carries serializer-drift lineage fallback for provider requests
-and compaction preflight, Session-leaf timeline ownership, and configured HTTPS
-GPT-5/GPT-6 Responses recognition. Earlier release notes: [rc.10](../../release/v0.1.0-rc.10-release-notes.md). See the [rc.11 release notes](../../release/v0.1.0-rc.11-release-notes.md).
+The current source carries serializer-drift lineage fallback for provider
+requests and compaction preflight, Session-leaf timeline ownership, configured
+HTTPS GPT-5/GPT-6 Responses recognition, and Session-local controls for new
+remote compaction attempts. Earlier release notes: [rc.11](../../release/v0.1.0-rc.11-release-notes.md). See the [rc.12 release notes](../../release/v0.1.0-rc.12-release-notes.md).
 
 Publication evidence lives in repository release receipts. The
 [rc.8 release receipt](../../release/v0.1.0-rc.8-release-receipt.md) records the
@@ -74,11 +74,11 @@ Old tag graphs remain public and are not privacy-clean. Old releases remain immu
 
 ## Evidence
 
-- The locked Pi 0.83.0 suite passes all 92 tests. Package verification passes.
+- The locked Pi 0.83.0 suite passes all 99 tests. Package verification passes.
 - The earlier Pi 0.85.1 comparison retained the base revision's 12
   readiness-property failures. Pi 0.86.1 retained its 16 serializer/readiness
   failures. Those comparisons covered the prior 91-test tip; the unbounded
-  peer range does not establish runtime compatibility for this amendment.
+  peer range does not establish runtime compatibility for this release.
 - The rc.8 OIDC publish run `31930165211` passed from exact `main` source.
   Its receipt records verified registry integrity and SLSA provenance.
 - Unit and lifecycle tests cover all three protocol adapters and direct current-branch serialization.

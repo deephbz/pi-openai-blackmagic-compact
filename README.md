@@ -16,10 +16,10 @@ With Blackmagic, it first derives the current branch through Pi's normal seriali
 
 ## Install and use
 
-The current checkout prepares candidate `0.1.0-rc.11` for the `latest` dist-tag. It is not published. The install command below remains the published rc.10 baseline and does not contain the current changes. See the [rc.11 release notes](release/v0.1.0-rc.11-release-notes.md).
+The current source prepares `0.1.0-rc.12`. The prior `0.1.0-rc.11` release is documented in the [GitHub release](https://github.com/deephbz/pi-openai-blackmagic-compact/releases/tag/v0.1.0-rc.11). Install rc.12 or test a local checkout:
 
 ```sh
-pi install npm:@hypercarrier/pi-openai-blackmagic-compact@0.1.0-rc.10
+pi install npm:@hypercarrier/pi-openai-blackmagic-compact@0.1.0-rc.12
 # Or test a local checkout:
 pi -e /path/to/pi-openai-blackmagic-compact
 ```
@@ -34,14 +34,13 @@ Use the `/blackmagic` command group to inspect or control new remote compaction 
 /blackmagic disable
 ```
 
-`status` checks the current model route, Pi authorization, branch serialization, and persisted replay. It reports concrete route blockers without exposing endpoint data. `enable` permits new remote compaction attempts. `disable` skips new remote attempts so Pi uses native compaction; persisted checkpoint replay remains active. Both settings persist as typed, namespaced Session entries outside model context. The latest valid setting applies across all Session entries, so tree navigation does not undo it; copied forks inherit setting entries copied into the fork, and a new Session defaults to enabled. Repeating the current setting is idempotent. Invalid or extra arguments show usage before preflight. A compaction attempt keeps the mode captured when its hook starts, so disabling during an in-flight attempt does not cancel it. Status does not call the compaction endpoint or guarantee that a later request succeeds.
+`status` checks the current model route, Pi authorization, branch serialization, and persisted replay. It reports concrete route blockers without exposing endpoint data. `enable` permits new remote compaction attempts. `disable` skips new remote attempts so Pi uses native compaction; persisted checkpoint replay remains active. Both settings persist as typed, namespaced Session entries outside model context. The latest valid setting applies across all Session entries, so tree navigation does not undo it; copied forks inherit setting entries copied into the fork, and a new Session defaults to enabled. Repeating the current setting is idempotent. Invalid or extra arguments show usage before preflight. A compaction attempt keeps the mode captured when its hook starts, so disabling during an in-flight attempt does not cancel it. Status does not call the compaction endpoint or guarantee that a later request succeeds. The old `/blackmagic-status` command is removed.
 
-## 0.1.0-rc.11 release candidate
+## 0.1.0-rc.12
 
-This candidate carries conversation-scoped replay, lineage-based serializer-drift
-fallback, Session-leaf timeline ownership, and generalized GPT-5/GPT-6 route
-recognition. It is prepared for `latest`; no tag or publication exists yet. The
-observed `next` remains on rc.10 and published `latest` remains on rc.9. See the [rc.11 release notes](release/v0.1.0-rc.11-release-notes.md).
+This release carries conversation-scoped replay, lineage-based serializer-drift
+fallback, Session-leaf timeline ownership, generalized GPT-5/GPT-6 route
+recognition, and Session-local controls for new remote compaction attempts. See the [rc.12 release notes](release/v0.1.0-rc.12-release-notes.md) and the published [rc.11 release](release/v0.1.0-rc.11-release-notes.md) for the prior release boundary.
 
 Known limits:
 
@@ -105,4 +104,4 @@ npm run verify:package
 npm run pack:check
 ```
 
-The rc.10 candidate suite checks the readiness status command, saved-checkpoint expansion, provider contracts, the unbounded Pi peer range from 0.83.0, empty-summary remote compaction, direct current-branch serialization, replay and restart boundaries, timeline persistence, redaction, LLM-context exclusion, package contents, and RPC loading.
+The 99-test suite checks the command controls, readiness status, saved-checkpoint expansion, provider contracts, the unbounded Pi peer range from 0.83.0, empty-summary remote compaction, direct current-branch serialization, replay and restart boundaries, timeline persistence, redaction, LLM-context exclusion, package contents, and RPC loading.
