@@ -16,10 +16,11 @@ With Blackmagic, it first derives the current branch through Pi's normal seriali
 
 ## Install and use
 
-Install an exact published version. The release workflow is
-[`.github/workflows/publish.yml`](.github/workflows/publish.yml); it validates
-an immutable version tag, verifies one packed artifact, scans it, and publishes
-that artifact with npm provenance.
+Install an exact published version. Pushing tag `v<version>` runs
+[`.github/workflows/publish.yml`](.github/workflows/publish.yml); it verifies
+one packed artifact, scans it, publishes it with npm provenance, and creates
+the GitHub Release. Run `git-privacy-scan --ref HEAD history` before you push
+the tag. Publication adds no commit.
 
 ```sh
 pi install npm:@hypercarrier/pi-openai-blackmagic-compact@<version>
