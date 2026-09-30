@@ -73,8 +73,6 @@ Old tag graphs remain public and are not privacy-clean. Old releases remain immu
   readiness-property failures. Pi 0.86.1 retained its 16 serializer/readiness
   failures. Those comparisons covered the prior 91-test tip; the unbounded
   peer range does not establish runtime compatibility for this release.
-- The rc.8 OIDC publish run `31930165211` passed from exact `main` source.
-  Its receipt records verified registry integrity and SLSA provenance.
 - Unit and lifecycle tests cover all three protocol adapters and direct current-branch serialization.
 - The serialization corpus includes custom messages, branch and compaction summaries, included and excluded bash messages, assistant tool calls, and tool results.
 - Tests cover checkpoint replay, same-route model-switch translation, saved-checkpoint projection, restart and fork boundaries, redacted telemetry, package contents, and RPC loading from another directory.
