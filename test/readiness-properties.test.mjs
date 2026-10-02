@@ -12,8 +12,9 @@ import { checkpointDetails, sha256 } from "../src/contract.mjs";
 
 const require = createRequire(import.meta.url);
 const codingEntry = fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent"));
-const corePackage = require.resolve("@earendil-works/pi-agent-core/package.json", { paths: [dirname(codingEntry)] });
-const { prepareCompaction, DEFAULT_COMPACTION_SETTINGS } = await import(join(dirname(corePackage), "dist/index.js"));
+// Use the preparation Pi itself builds for session_before_compact. Pi does not
+// export it from the package root.
+const { prepareCompaction, DEFAULT_COMPACTION_SETTINGS } = await import(join(dirname(codingEntry), "core/compaction/index.js"));
 
 const AUDIT = Object.freeze({ extendedSeeds: [0x5eedc0de, 0x51cedbad, 0xa11ce5ed], extendedCases: 1000, stratumCases: 100, shrinkRuns: 2 });
 const HISTORICAL_ARTIFACT = Object.freeze([{ type: "compaction", encrypted_content: "frozen-historical-v1" }]);
@@ -28,7 +29,7 @@ const HISTORICAL_DETAILS = Object.freeze({
 });
 const usage = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
 const tool = { name: "probe", description: "Probe the readiness fixture", parameters: { type: "object", properties: {} } };
-const stats = { generated: 0, nativeSetupExcluded: 0, routes: {}, checkpoints: {}, storage: {}, dimensions: { contextEmpty: 0, promptChanged: 0, toolsChanged: 0, metadataDiffers: 0, descendant: 0, repeat: 0, custom: 0, timeline: 0, partialTurn: 0, duplicate: 0 }, remoteCalls: 0 };
+const stats = { generated: 0, nativeSetupExcluded: 0, repeatCompactions: 0, repeatHostNoWork: 0, routes: {}, checkpoints: {}, storage: {}, dimensions: { contextEmpty: 0, promptChanged: 0, toolsChanged: 0, metadataDiffers: 0, descendant: 0, repeat: 0, custom: 0, timeline: 0, partialTurn: 0, duplicate: 0 }, remoteCalls: 0 };
 
 function model(route, id, metadata = {}) {
   const baseUrl = route === "openai" ? "https://api.openai.com/v1" : route === "codex" ? "https://chatgpt.com/backend-api" : route === "azure" ? "https://resource.openai.azure.com/openai/v1" : "https://proxy.invalid/v1";
@@ -41,7 +42,7 @@ function fakePi(activeTools) {
   const handlers = new Map(); let command; let names = activeTools.map((entry) => typeof entry === "string" ? entry : entry.name);
   return { on: (name, handler) => handlers.set(name, handler), registerCommand: (_name, value) => { command = value; }, registerEntryRenderer() {}, appendEntry() {}, getActiveTools: () => [...names], getAllTools: () => [tool], setActiveTools: (next) => { names = next.map((entry) => typeof entry === "string" ? entry : entry.name); }, handlers, get command() { return command; } };
 }
-function prep(branch, settings) { const result = prepareCompaction(branch, settings); return result.ok ? result.value : undefined; }
+function prep(branch, settings) { return prepareCompaction(branch, settings); }
 function baseModel(route, switchModel, metadataDiffers) {
   const producer = model(route, route === "azure" ? "deployment-a" : "gpt-5", { reasoning: true, thinkingLevelMap: { high: "high" } });
   const currentId = route === "azure" ? (switchModel ? "deployment-alias" : "deployment-a") : switchModel ? "gpt-5-mini" : "gpt-5";
@@ -77,7 +78,9 @@ function nativeControlItem(providerPayload) {
   return providerPayload?.input?.find((item) => item?.role === "developer" || item?.role === "system");
 }
 function oracle(scenario, nativeEligible, contextEligible) {
-  if (!nativeEligible || !contextEligible || scenario.route === "unsupported" || scenario.authMode !== "valid" || !scenario.systemPrompt) return false;
+  // Status reports remote preflight only. Pi alone decides whether native
+  // preparation has work, and it skips session_before_compact when it has none.
+  if (!contextEligible || scenario.route === "unsupported" || scenario.authMode !== "valid" || !scenario.systemPrompt) return false;
   if (["tampered", "duplicate", "artifact-hash-corrupt", "artifact-length-corrupt", "unknown-scope"].includes(scenario.checkpoint)) return false;
   if (scenario.checkpoint === "switch-unavailable") return false;
   if (scenario.checkpoint !== "none" && !scenario.descendant) return false;
@@ -241,7 +244,7 @@ async function runScenario(scenario, { remoteEnabled = true, verifyReplay = true
       assert.equal(replayed, undefined, "actual current payload tampering must fail closed");
     }
     let compactionState;
-    if (observed && effective.checkpoint === "none" && remoteEnabled) {
+    if (observed && nativeEligible && effective.checkpoint === "none" && remoteEnabled) {
       const result = await pi.handlers.get("session_before_compact")({ preparation: nativePreparation, branchEntries: session.getBranch(), signal: new AbortController().signal }, context);
       compactionState = result?.compaction?.details?.state;
       assert.equal(compactionState, "remote_applied");
@@ -255,6 +258,8 @@ async function runScenario(scenario, { remoteEnabled = true, verifyReplay = true
         context.ui.notify = (...notice) => repeatNotices.push(notice);
         await pi.command.handler("status", context);
         assert.match(repeatNotices.at(-1)?.[0] ?? "", /ready to attempt/i, "repeated readiness failed");
+        if (!repeatPreparation) { stats.repeatHostNoWork += 1; return { observed, expected, nativeEligible, statusFetchCalls, fetchCalls: fetchCalls.length, branchPreserved, compactionState, statusText }; }
+        stats.repeatCompactions += 1;
         const repeatResult = await pi.handlers.get("session_before_compact")({ preparation: repeatPreparation, branchEntries: repeatBranch, signal: new AbortController().signal }, context);
         assert.equal(repeatResult?.compaction?.details?.state, "remote_applied", "repeated compaction failed");
       }
@@ -338,7 +343,9 @@ test("instruction and tool preservation property stratum", async () => {
 });
 
 test("repeated compaction property stratum", async () => {
+  const before = stats.repeatCompactions;
   await assertFamily("repeat", repeatArb, [0x5555], AUDIT.stratumCases);
+  assert.ok(stats.repeatCompactions > before, `repeat stratum reached no native-eligible repeated compaction; hostNoWork=${stats.repeatHostNoWork}`);
 });
 
 test("hash-tampered checkpoint property stratum", async () => {

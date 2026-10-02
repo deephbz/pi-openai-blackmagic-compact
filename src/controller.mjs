@@ -1,14 +1,17 @@
 import { buildSessionContext, convertToLlm } from "@earendil-works/pi-coding-agent";
-import { azureOpenAIResponsesApi, openAICodexResponsesApi, openAIResponsesApi } from "@earendil-works/pi-ai/compat";
+import * as piAi from "@earendil-works/pi-ai/compat";
 import { Box, Text } from "@earendil-works/pi-tui";
 import { compactProviderInput, validateProviderAuthorization } from "./adapters.mjs";
 import { COMPACTION_TIMELINE_ENTRY_TYPE, compactionTimelineData, compactionTimelineLabel, identifySurface, latestActiveCompaction, replayIdentityMatches, safeTelemetry, sha256 } from "./contract.mjs";
 
 const DELEGATES = Object.freeze({
-  "openai-responses": openAIResponsesApi().streamSimple,
-  "openai-codex-responses": openAICodexResponsesApi().streamSimple,
-  "azure-openai-responses": azureOpenAIResponsesApi().streamSimple,
+  "openai-responses": piAi.openAIResponsesApi().streamSimple,
+  "openai-codex-responses": piAi.openAICodexResponsesApi().streamSimple,
+  "azure-openai-responses": piAi.azureOpenAIResponsesApi().streamSimple,
 });
+// Pi-ai 0.86 providers read the system prompt and tools only from transcript
+// system messages; older providers read them from the raw Context.
+const toProviderContext = typeof piAi.normalizeContext === "function" ? piAi.normalizeContext : (context) => context;
 const REPLAY_NAMESPACE = "pi-openai-blackmagic-compact/1";
 const REPLAY_SCOPE = "conversation";
 const CONTROL_ENTRY_TYPE = "pi-openai-blackmagic-compact/control/1";
@@ -194,7 +197,7 @@ export async function captureNativeBody(model, context, options) {
   const capture = new Promise((resolve, reject) => { resolveCapture = resolve; rejectCapture = reject; });
   let stream;
   try {
-    stream = delegate(model, context, { ...options, onPayload(payload) { if (!Array.isArray(payload?.input)) throw new Error("native Responses serializer produced no input array"); settled = true; resolveCapture(structuredClone(payload)); throw new SerializationProbeComplete("serialization probe complete"); } });
+    stream = delegate(model, toProviderContext(context), { ...options, onPayload(payload) { if (!Array.isArray(payload?.input)) throw new Error("native Responses serializer produced no input array"); settled = true; resolveCapture(structuredClone(payload)); throw new SerializationProbeComplete("serialization probe complete"); } });
   } catch (error) { rejectCapture(error); return capture; }
   void stream.result().then((message) => { if (!settled) rejectCapture(new Error(message?.errorMessage ?? "native Responses serializer failed")); }, rejectCapture);
   return capture;
