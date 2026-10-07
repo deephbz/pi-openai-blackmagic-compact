@@ -40,11 +40,12 @@ Use the `/blackmagic` command group to inspect or control new remote compaction 
 
 `status` checks the current model route, Pi authorization, branch serialization, and persisted replay. It reports concrete route blockers without exposing endpoint data. `enable` permits new remote compaction attempts. `disable` skips new remote attempts so Pi uses native compaction; persisted checkpoint replay remains active. Both settings persist as typed, namespaced Session entries outside model context. The latest valid setting applies across all Session entries, so tree navigation does not undo it; copied forks inherit setting entries copied into the fork, and a new Session defaults to enabled. Repeating the current setting is idempotent. Invalid or extra arguments show usage before preflight. A compaction attempt keeps the mode captured when its hook starts, so disabling during an in-flight attempt does not cancel it. Status does not call the compaction endpoint or guarantee that a later request succeeds. The old `/blackmagic-status` command is removed.
 
-## 0.1.0-rc.12
+## 0.1.0-rc.13
 
 This release carries conversation-scoped replay, lineage-based serializer-drift
 fallback, Session-leaf timeline ownership, generalized GPT-5/GPT-6 route
-recognition, and Session-local controls for new remote compaction attempts. See the [rc.12 release notes](release/v0.1.0-rc.12-release-notes.md) and the published [rc.11 release](release/v0.1.0-rc.11-release-notes.md) for the prior release boundary.
+recognition, Session-local controls for new remote compaction attempts, and
+normalized provider context for Pi 0.86 and later. See the [rc.13 release notes](release/v0.1.0-rc.13-release-notes.md) and the published [rc.12 release](release/v0.1.0-rc.12-release-notes.md) for the prior release boundary.
 
 Known limits:
 
