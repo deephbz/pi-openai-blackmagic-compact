@@ -19,8 +19,9 @@ With Blackmagic, it first derives the current branch through Pi's normal seriali
 Install an exact published version. Pushing tag `v<version>` runs
 [`.github/workflows/publish.yml`](.github/workflows/publish.yml); it verifies
 one packed artifact, scans it, publishes it with npm provenance, and creates
-the GitHub Release. Run `git-privacy-scan --ref HEAD history` before you push
-the tag. Publication adds no commit. From 0.1.0, releases use stable semantic
+the GitHub Release. Before you push the tag, run
+`git-privacy-scan --ref HEAD --base "$(git config privacy.baseline)" range`;
+any finding blocks the release. Publication adds no commit. From 0.1.0, releases use stable semantic
 versions and publish to npm `latest`.
 
 ```sh
