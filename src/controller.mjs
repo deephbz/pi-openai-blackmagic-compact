@@ -263,6 +263,18 @@ export function createServerCompactionController(pi, options = {}) {
   const appendedCompactions = new Set();
   let sessionManager;
 
+  // A cooperating controller claims generation before it invokes Pi compaction.
+  // Claims suppress new remote calls only; persisted checkpoint replay stays active.
+  const methodClaims = new Map();
+  pi.events?.on?.("hc.compaction-method", (claim) => {
+    if (!claim || typeof claim.owner !== "string" || !claim.owner ||
+        typeof claim.token !== "string" || !claim.token) return;
+    if (claim.active === true && ["summary", "keepset"].includes(claim.method)) methodClaims.set(claim.owner, { token: claim.token, method: claim.method });
+    else if (claim.active === false && methodClaims.get(claim.owner)?.token === claim.token) methodClaims.delete(claim.owner);
+  });
+  pi.on("session_shutdown", () => methodClaims.clear());
+  pi.on("session_tree", () => methodClaims.clear());
+
   let remoteCompactionEnabled = true;
   const adoptSession = (manager) => {
     if (!manager || manager === sessionManager) return;
@@ -275,7 +287,7 @@ export function createServerCompactionController(pi, options = {}) {
   const usage = (ctx) => notify(ctx, "Usage: /blackmagic status|enable|disable", "warning");
   const disabledStatus = "Blackmagic remote compaction: disabled — Pi native compaction is active; persisted replay remains active.";
 
-  pi.on("session_start", (_event, ctx) => { sessionManager = ctx.sessionManager; remoteCompactionEnabled = readRemoteCompactionPreference(sessionManager); });
+  pi.on("session_start", (_event, ctx) => { methodClaims.clear(); sessionManager = ctx.sessionManager; remoteCompactionEnabled = readRemoteCompactionPreference(sessionManager); });
   pi.registerEntryRenderer(COMPACTION_TIMELINE_ENTRY_TYPE, (entry, options, theme) => {
     const label = compactionTimelineLabel(entry.data);
     if (!label) return undefined;
@@ -334,7 +346,7 @@ export function createServerCompactionController(pi, options = {}) {
   pi.on("session_before_compact", async (event, ctx) => {
     adoptSession(ctx?.sessionManager);
     const remoteEnabledAtEntry = remoteCompactionEnabled;
-    if (!remoteEnabledAtEntry) return undefined;
+    if (!remoteEnabledAtEntry || methodClaims.size > 0) return undefined;
     const model = ctx?.model;
     const canResolveAuth = model && typeof ctx?.modelRegistry?.getApiKeyAndHeaders === "function";
     if (!canResolveAuth) return undefined;
@@ -380,6 +392,10 @@ export function createServerCompactionController(pi, options = {}) {
         }
         remoteCompactionEnabled = enabled;
         notify(ctx, `Blackmagic remote compaction is now ${enabled ? "enabled" : "disabled"}; persisted replay remains active.`, "info");
+        return;
+      }
+      if (methodClaims.size > 0) {
+        notify(ctx, "Blackmagic remote compaction: deferred to an active compaction method; persisted replay remains active.", "info");
         return;
       }
       const enabledAtStart = remoteCompactionEnabled;

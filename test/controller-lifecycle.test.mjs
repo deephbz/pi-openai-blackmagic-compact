@@ -12,7 +12,7 @@ const model = { provider: "openai", id: "gpt-5", name: "gpt-5", baseUrl: "https:
 const switchedModel = { ...model, id: "gpt-5-mini", name: "gpt-5-mini" };
 const auth = { ok: true, apiKey: "synthetic-key", headers: { "x-test": "yes" } };
 const tool = { name: "probe", description: "Probe the current branch", parameters: { type: "object", properties: {} } };
-function fakePi({ sessionManager } = {}) { const handlers = new Map(); const renderers = new Map(); const appended = []; return { on: (name, handler) => handlers.set(name, handler), registerCommand(name, command) { this.command = command; }, registerEntryRenderer: (type, renderer) => renderers.set(type, renderer), appendEntry: (type, data) => { appended.push({ type, data }); sessionManager?.appendCustomEntry?.(type, data); }, getActiveTools: () => ["probe"], getAllTools: () => [tool], handlers, renderers, appended }; }
+function fakePi({ sessionManager } = {}) { const handlers = new Map(); const renderers = new Map(); const appended = []; const channels = new Map(); return { events: { on: (name, fn) => channels.set(name, fn), emit: (name, value) => channels.get(name)?.(value) }, on: (name, handler) => handlers.set(name, handler), registerCommand(name, command) { this.command = command; }, registerEntryRenderer: (type, renderer) => renderers.set(type, renderer), appendEntry: (type, data) => { appended.push({ type, data }); sessionManager?.appendCustomEntry?.(type, data); }, getActiveTools: () => ["probe"], getAllTools: () => [tool], handlers, renderers, appended }; }
 function assistantToolCall() { return { role: "assistant", content: [{ type: "thinking", thinking: "reasoning before the probe" }, { type: "toolCall", id: "call-1", name: "probe", arguments: {} }], api: model.api, provider: model.provider, model: model.id, usage, stopReason: "toolUse", timestamp: 6 }; }
 function preparation(firstKeptEntryId) { return { firstKeptEntryId, messagesToSummarize: [], turnPrefixMessages: [], isSplitTurn: false, tokensBefore: 12, fileOps: { read: new Set(), edited: new Set() }, settings: { enabled: true, reserveTokens: 16384, keepRecentTokens: 20000 } }; }
 
@@ -101,6 +101,34 @@ test("blackmagic controls persist across reload, tree navigation, and copied for
   }
 });
 
+test("method ownership skips generation before auth, survives stale release, and resets at boundaries", async () => {
+  const pi = fakePi();
+  createServerCompactionController(pi);
+  let authCalls = 0;
+  const ctx = controlContext(SessionManager.inMemory('/tmp'), { modelRegistry: { getApiKeyAndHeaders: async () => { authCalls += 1; throw new Error('synthetic auth stop'); } } });
+  const hook = () => pi.handlers.get('session_before_compact')({}, ctx);
+  const claim = (token, active, method = 'keepset') => pi.events.emit('hc.compaction-method', {owner:'hc-auto-compact', token, active, method});
+  claim('one', true);
+  assert.equal(await hook(), undefined);
+  assert.equal(authCalls, 0);
+  claim('two', true);
+  claim('one', false);
+  await hook();
+  assert.equal(authCalls, 0, 'old release must not clear the newer claim');
+  pi.events.emit('hc.compaction-method', {owner:'hc-auto-compact', token:'two', active:false});
+  await hook();
+  assert.equal(authCalls, 1, 'native hook lane resumes after matched release');
+  claim('native', true, 'native');
+  await hook();
+  assert.equal(authCalls, 2, 'native does not claim another method');
+  for (const boundary of ['session_tree', 'session_shutdown', 'session_start']) {
+    claim(boundary, true);
+    pi.handlers.get(boundary)({}, ctx);
+    await hook();
+  }
+  assert.equal(authCalls, 5, 'claims must not leak across Session/branch boundaries');
+});
+
 test("disabled controls skip new remote compaction before authorization", async () => {
   const session = SessionManager.inMemory("/tmp");
   const first = session.appendMessage({ role: "user", content: [{ type: "text", text: "disabled context" }], timestamp: 1 });
@@ -132,6 +160,9 @@ test("disabled controls preserve saved-checkpoint replay", async () => {
   const replayed = await pi.handlers.get("before_provider_request")({ payload }, ctx);
   assert.ok(replayed, "disabled mode must preserve ordinary provider replay");
   assert.equal(replayed.input.some((item) => item.encrypted_content === "opaque"), true);
+  pi.events.emit('hc.compaction-method', {owner:'hc-auto-compact', token:'summary-run', method:'summary', active:true});
+  const claimedReplay = await pi.handlers.get('before_provider_request')({payload}, ctx);
+  assert.equal(claimedReplay.input.some((item) => item.encrypted_content === 'opaque'), true, 'method ownership must not disable persisted replay');
   const next = await pi.handlers.get("session_before_compact")({ preparation: preparation(first.session.getBranch()[0].id), branchEntries: first.session.getBranch(), signal: new AbortController().signal }, ctx);
   assert.equal(next, undefined, "disabled mode skips only new remote compaction");
 });

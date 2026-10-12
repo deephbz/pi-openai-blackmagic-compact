@@ -31,6 +31,23 @@ checkpoint and only a UI-entry tail, status can report ready while Pi declines
 `/compact`. This remains a known false positive. The repository's
 `docs/reviews/readiness-audit.md` records the evidence and limits.
 
+## Cooperating compaction methods
+
+A lifecycle controller can emit `hc.compaction-method` on `pi.events` before
+calling Pi compaction, with `{owner, token, method, active}`. `owner` and `token`
+are nonempty strings; `method` is `summary` or `keepset`. An active claim suppresses
+new Blackmagic generation before authorization or network work. Release uses the
+same owner and token with `active: false`; `method` is optional on release.
+An old release cannot clear a newer claim. Claims clear on Session start, shutdown, or tree change. Native mode emits
+no claim and retains the normal Blackmagic hook lane. A controller must release
+its claim on every terminal path.
+
+The signal owns only generation arbitration. It changes no saved preference and
+never disables persisted checkpoint replay. `/blackmagic status` reports an
+active claim without a preflight call. Publish the claim before `ctx.compact()`;
+setting it inside a compaction hook cannot protect earlier handlers. Extensions
+that do not implement the signal remain outside this arbitration guarantee.
+
 ## Persistence and replay
 
 Replay requires an active-branch checkpoint and matching surface, protocol,
