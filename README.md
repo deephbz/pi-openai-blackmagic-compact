@@ -20,7 +20,8 @@ Install an exact published version. Pushing tag `v<version>` runs
 [`.github/workflows/publish.yml`](.github/workflows/publish.yml); it verifies
 one packed artifact, scans it, publishes it with npm provenance, and creates
 the GitHub Release. Run `git-privacy-scan --ref HEAD history` before you push
-the tag. Publication adds no commit.
+the tag. Publication adds no commit. From 0.1.0, releases use stable semantic
+versions and publish to npm `latest`.
 
 ```sh
 pi install npm:@hypercarrier/pi-openai-blackmagic-compact@<version>
@@ -40,12 +41,13 @@ Use the `/blackmagic` command group to inspect or control new remote compaction 
 
 `status` checks the current model route, Pi authorization, branch serialization, and persisted replay. It reports concrete route blockers without exposing endpoint data. `enable` permits new remote compaction attempts. `disable` skips new remote attempts so Pi uses native compaction; persisted checkpoint replay remains active. Both settings persist as typed, namespaced Session entries outside model context. The latest valid setting applies across all Session entries, so tree navigation does not undo it; copied forks inherit setting entries copied into the fork, and a new Session defaults to enabled. Repeating the current setting is idempotent. Invalid or extra arguments show usage before preflight. A compaction attempt keeps the mode captured when its hook starts, so disabling during an in-flight attempt does not cancel it. Status does not call the compaction endpoint or guarantee that a later request succeeds. The old `/blackmagic-status` command is removed.
 
-## 0.1.0-rc.13
+## 0.1.0
 
-This release carries conversation-scoped replay, lineage-based serializer-drift
-fallback, Session-leaf timeline ownership, generalized GPT-5/GPT-6 route
-recognition, Session-local controls for new remote compaction attempts, and
-normalized provider context for Pi 0.86 and later. See the [rc.13 release notes](release/v0.1.0-rc.13-release-notes.md) and the published [rc.12 release](release/v0.1.0-rc.12-release-notes.md) for the prior release boundary.
+This first stable release carries conversation-scoped replay, lineage-based
+serializer-drift fallback, Session-leaf timeline ownership, generalized
+GPT-5/GPT-6 route recognition, Session-local controls for new remote compaction
+attempts, normalized provider context for Pi 0.86 and later, and token-scoped
+cooperation with an external compaction lifecycle controller. See the [0.1.0 release notes](release/v0.1.0-release-notes.md) and the published [rc.13 release](release/v0.1.0-rc.13-release-notes.md) for the prior release boundary.
 
 Known limits:
 
