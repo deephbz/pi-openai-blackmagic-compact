@@ -112,4 +112,7 @@ npm run verify:package
 npm run pack:check
 ```
 
-The 99-test suite checks the command controls, readiness status, saved-checkpoint expansion, provider contracts, the unbounded Pi peer range from 0.83.0, empty-summary remote compaction, direct current-branch serialization, replay and restart boundaries, timeline persistence, redaction, LLM-context exclusion, package contents, and RPC loading.
+The standalone [Responses simulator](sim/README.md) runs in `npm test`.
+Use `npm run test:sim:campaign` for the longer seeded campaign.
+
+The unit suite checks the command controls, readiness status, saved-checkpoint expansion, provider contracts, the unbounded Pi peer range from 0.83.0, empty-summary remote compaction, direct current-branch serialization, replay and restart boundaries, timeline persistence, redaction, LLM-context exclusion, package contents, and RPC loading.

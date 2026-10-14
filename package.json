@@ -27,7 +27,9 @@
     "@earendil-works/pi-tui": ">=0.83.0"
   },
   "scripts": {
-    "test": "node --test test/*.test.mjs",
+    "test": "node --test test/*.test.mjs && npm run test:sim",
+    "test:sim": "node --test --test-concurrency=1 sim/*.test.mjs",
+    "test:sim:campaign": "PI_SIM_RUNS=1000 npm run test:sim",
     "verify:package": "node scripts/verify-package.mjs",
     "pack:check": "npm pack --dry-run && npm run verify:package"
   },
