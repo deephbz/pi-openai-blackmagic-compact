@@ -9,9 +9,14 @@ const DELEGATES = Object.freeze({
   "openai-codex-responses": piAi.openAICodexResponsesApi().streamSimple,
   "azure-openai-responses": piAi.azureOpenAIResponsesApi().streamSimple,
 });
-// Pi-ai 0.86 providers read the system prompt and tools only from transcript
-// system messages; older providers read them from the raw Context.
-const toProviderContext = typeof piAi.normalizeContext === "function" ? piAi.normalizeContext : (context) => context;
+// The probe supplies the current prompt and active tools as one snapshot.
+// New Pi Sessions already contain system/tool deltas. Do not replay those
+// deltas after this snapshot: normalization would duplicate the prompt and
+// could restore a historical tool definition over the active definition.
+// Older providers read the snapshot directly from the raw Context.
+const toProviderContext = typeof piAi.normalizeContext === "function"
+  ? (context) => piAi.normalizeContext({ ...context, messages: context.messages.filter((message) => message.role !== "system") })
+  : (context) => context;
 const REPLAY_NAMESPACE = "pi-openai-blackmagic-compact/1";
 const REPLAY_SCOPE = "conversation";
 const CONTROL_ENTRY_TYPE = "pi-openai-blackmagic-compact/control/1";

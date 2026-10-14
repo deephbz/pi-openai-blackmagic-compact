@@ -2,6 +2,7 @@ import './bootstrap.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fc from 'fast-check';
+import { readFileSync } from 'node:fs';
 import { run, violations } from './world.mjs';
 
 function check(trace) {
@@ -22,6 +23,11 @@ test('B1-B5 bounded fault/reopen/old-Session table', async () => {
       check(await run(17, actions, { old }));
     }
   }
+});
+
+test('B7 minimized duplicate-system regression', async () => {
+  const fixture = JSON.parse(readFileSync(new URL('./fixtures/duplicate-system.json', import.meta.url), 'utf8'));
+  check(await run(fixture.seed, fixture.actions));
 });
 
 test('B6 exact seeded replay and virtual/wall speed', async (t) => {

@@ -1,0 +1,7 @@
+{
+  "seed": 17,
+  "actions": ["one", "compact", "two"],
+  "property": "B7",
+  "observation": "The compact probe duplicated the current system text by combining Context.systemPrompt with persisted system messages. The ordinary request contained one copy.",
+  "expected": "Compact and ordinary requests carry the same effective instructions."
+}

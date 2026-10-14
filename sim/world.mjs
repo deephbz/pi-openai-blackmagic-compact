@@ -125,6 +125,8 @@ export function violations(trace) {
     const body = entry.body;
     if (!body.model || !Array.isArray(body.input)) failures.push('B1');
     if (entry.compact) {
+      const instructions = (request) => request.instructions ?? request.input.filter((part) => part.role === 'developer' || part.role === 'system').map((part) => part.content);
+      if (previous && JSON.stringify(instructions(body)) !== JSON.stringify(instructions(previous.body))) failures.push('B7');
       if (['stream', 'tools', 'store', 'max_output_tokens'].some((key) => key in body)) failures.push('B1');
       continue;
     }
