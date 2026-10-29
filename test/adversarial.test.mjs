@@ -1,3 +1,4 @@
+import "./home.mjs";
 import http from "node:http";
 import test from "node:test";
 import assert from "node:assert/strict";

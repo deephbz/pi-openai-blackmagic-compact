@@ -1,3 +1,4 @@
+import "./home.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { SessionManager } from "@earendil-works/pi-coding-agent";

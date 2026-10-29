@@ -1,3 +1,4 @@
+import "./home.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { COMPACTION_METHOD_LABELS, COMPACTION_TIMELINE_METHODS, compactionTimelineData, compactionTimelineLabel, describeRemoteRoute, projectCompactionMethod } from "../src/contract.mjs";
